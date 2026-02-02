@@ -71,6 +71,7 @@ export interface TestSchedule {
   current_registrations: number;
   created_by: string;
   is_closed: boolean; // Manual control for session status
+  is_deleted?: boolean; // Soft delete flag for history persistence
 }
 
 export interface Registration {

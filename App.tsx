@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { HashRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { createClient } from '@supabase/supabase-js';
 import { 
@@ -7,7 +6,8 @@ import {
 } from './types';
 import { INITIAL_ADMINS, MOCK_TESTS } from './constants';
 
-const STORAGE_KEY = 'ielts_system_supabase_v1';
+const STORAGE_KEY = 'ielts_system_v17_modern_theme';
+const BRAND_BLUE = '#38b6ff';
 
 // --- SUPABASE CONFIGURATION ---
 const SUPABASE_URL = 'https://cirfftfeoegwzipfpyiq.supabase.co';
@@ -74,7 +74,7 @@ const generateAvatar = (role: UserRole, id: string) => {
   return `https://api.dicebear.com/7.x/avataaars/svg?seed=${seed}&backgroundColor=${bgColor}&clothing=overall&topColor=3c4e5e&accessories=none`;
 };
 
-// --- SUPABASE SYNC ENGINE ---
+// --- GLOBAL SYNC ENGINE (SUPABASE) ---
 
 const SupabaseAPI = {
   async getData(): Promise<AppState | null> {
@@ -88,88 +88,60 @@ const SupabaseAPI = {
       ]);
 
       if (st.error || ad.error || ts.error || rg.error || rs.error) {
-        console.error("Supabase Data Fetch error", { st: st.error, ad: ad.error });
         return null;
       }
 
       return {
         students: st.data || [],
-        admins: ad.data || INITIAL_ADMINS,
+        admins: ad.data && ad.data.length > 0 ? ad.data : INITIAL_ADMINS,
         tests: ts.data || MOCK_TESTS,
         registrations: rg.data || [],
         results: rs.data || []
       };
     } catch (e) {
-      console.error("Supabase API Connection error:", e);
       return null;
     }
   },
 
-  async upsertStudent(student: Student) {
-    return supabase.from('students').upsert(student);
-  },
+  async saveData(data: AppState): Promise<boolean> {
+    try {
+      const tables = [
+        { name: 'students', data: data.students, pk: 'user_id' },
+        { name: 'admins', data: data.admins, pk: 'admin_id' },
+        { name: 'tests', data: data.tests, pk: 'test_id' },
+        { name: 'registrations', data: data.registrations, pk: 'reg_id' },
+        { name: 'results', data: data.results, pk: 'result_id' }
+      ];
 
-  async deleteStudent(userId: string) {
-    return supabase.from('students').delete().eq('user_id', userId);
-  },
-
-  async upsertTest(test: TestSchedule) {
-    return supabase.from('tests').upsert(test);
+      for (const table of tables) {
+        if (table.data && table.data.length > 0) {
+          const { error } = await supabase.from(table.name).upsert(table.data, { onConflict: table.pk });
+          if (error) {
+            console.error(`Error saving to ${table.name}:`, error.message);
+            return false;
+          }
+        }
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
   },
 
   async deleteTest(testId: string) {
-    return supabase.from('tests').delete().eq('test_id', testId);
+    // Instead of actual deletion, we update a soft-delete flag
+    // This ensures results linked to this test still show session details to the student
+    return supabase.from('tests').update({ is_deleted: true }).eq('test_id', testId);
   },
 
-  async upsertRegistration(reg: Registration) {
-    return supabase.from('registrations').upsert(reg);
-  },
-
-  async upsertResult(res: Result) {
-    return supabase.from('results').upsert(res);
-  },
-
-  async deleteResult(resultId: string) {
-    return supabase.from('results').delete().eq('result_id', resultId);
-  },
-
-  async upsertAdmin(admin: Admin) {
-    return supabase.from('admins').upsert(admin);
+  async deleteStudent(userId: string) {
+    await supabase.from('registrations').delete().eq('user_id', userId);
+    await supabase.from('results').delete().eq('user_id', userId);
+    return supabase.from('students').delete().eq('user_id', userId);
   },
 
   async deleteAdmin(adminId: string) {
     return supabase.from('admins').delete().eq('admin_id', adminId);
-  },
-
-  async purgeOldData() {
-    const oneYearAgo = new Date();
-    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const isoDate = oneYearAgo.toISOString();
-
-    const { data: oldStudents, error } = await supabase
-      .from('students')
-      .select('user_id')
-      .lt('created_at', isoDate);
-
-    if (error) {
-      console.error("Purge Error:", error);
-      return false;
-    }
-
-    if (oldStudents && oldStudents.length > 0) {
-      const ids = oldStudents.map(s => s.user_id);
-      const { error: deleteError } = await supabase
-        .from('students')
-        .delete()
-        .in('user_id', ids);
-      
-      if (deleteError) {
-        console.error("Deletion during purge failed:", deleteError);
-        return false;
-      }
-      return true;
-    }
-    return false;
   }
 };
 
@@ -299,452 +271,33 @@ const PasswordInput: React.FC<{
   );
 };
 
+const ConfirmationModal: React.FC<{
+  isOpen: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+  variant?: 'danger' | 'primary';
+}> = ({ isOpen, onCancel, onConfirm, title, message, confirmText = 'Confirm', cancelText = 'Cancel', variant = 'danger' }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-2xl z-[100] flex items-center justify-center p-4">
+      <Card className="max-w-md w-full !rounded-[2rem] !bg-white/95 shadow-2xl animate-in zoom-in duration-200" title={title}>
+        <div className="space-y-6">
+          <p className="text-sm text-slate-500 font-bold leading-relaxed">{message}</p>
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="secondary" onClick={onCancel}>{cancelText}</Button>
+            <Button variant={variant} onClick={onConfirm} className="px-8">{confirmText}</Button>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
 // --- Page Components ---
-
-const AdminDashboard = ({ data }: { data: AppState }) => {
-  const stats = [
-    { label: 'Total Students', value: data.students.length, color: 'brand' },
-    { label: 'Upcoming Tests', value: data.tests.filter(t => !t.is_closed).length, color: 'blue' },
-    { label: 'Total Registrations', value: data.registrations.length, color: 'green' },
-    { label: 'Published Results', value: data.results.length, color: 'amber' },
-  ];
-
-  return (
-    <div className="space-y-10 animate-in fade-in duration-500">
-      <h2 className="text-4xl font-black text-slate-900 leading-tight">Admin Overview</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {stats.map((s, idx) => (
-          <Card key={idx} title={s.label}>
-             <p className="text-4xl font-black text-slate-900">{s.value}</p>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const StudentManager = ({ 
-  students, onAdd, onDelete, isReadOnly 
-}: { 
-  students: Student[]; 
-  onAdd: (s: any) => Promise<any>; 
-  onUpdate: (s: Student) => Promise<void>; 
-  onDelete: (id: string) => Promise<void>;
-  isReadOnly: boolean;
-  data: AppState;
-  currentAdmin: any;
-  userRole: any;
-}) => {
-  const [search, setSearch] = useState('');
-  const [isAdding, setIsAdding] = useState(false);
-  const [newStudent, setNewStudent] = useState({ user_id: '', name: '', phone: '', gender: Gender.MALE, batch_number: '', expiry_date: '' });
-
-  const filtered = students.filter(s => 
-    s.name.toLowerCase().includes(search.toLowerCase()) || 
-    s.user_id.toLowerCase().includes(search.toLowerCase())
-  );
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <h2 className="text-3xl font-black text-slate-900">Student Directory</h2>
-        <div className="flex gap-2 w-full md:w-auto">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search by name or ID..." />
-          {!isReadOnly && <Button onClick={() => setIsAdding(true)}>Add Student</Button>}
-        </div>
-      </div>
-
-      {isAdding && (
-        <Card title="Register New Student">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-            <input className="px-4 py-2 border rounded-xl" placeholder="User ID" value={newStudent.user_id} onChange={e => setNewStudent({...newStudent, user_id: e.target.value})} />
-            <input className="px-4 py-2 border rounded-xl" placeholder="Full Name" value={newStudent.name} onChange={e => setNewStudent({...newStudent, name: e.target.value})} />
-            <input className="px-4 py-2 border rounded-xl" placeholder="Phone" value={newStudent.phone} onChange={e => setNewStudent({...newStudent, phone: e.target.value})} />
-            <input className="px-4 py-2 border rounded-xl" placeholder="Batch" value={newStudent.batch_number} onChange={e => setNewStudent({...newStudent, batch_number: e.target.value})} />
-            <input className="px-4 py-2 border rounded-xl" type="date" value={newStudent.expiry_date} onChange={e => setNewStudent({...newStudent, expiry_date: e.target.value})} />
-            <select className="px-4 py-2 border rounded-xl" value={newStudent.gender} onChange={e => setNewStudent({...newStudent, gender: e.target.value as Gender})}>
-              <option value={Gender.MALE}>Male</option>
-              <option value={Gender.FEMALE}>Female</option>
-              <option value={Gender.OTHERS}>Others</option>
-            </select>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={async () => {
-              const res = await onAdd({ ...newStudent, remaining_tests: { listening: 0, reading: 0, writing: 0, speaking: 0, mock: 0 } });
-              if (res) setIsAdding(false);
-            }}>Save Student</Button>
-            <Button variant="secondary" onClick={() => setIsAdding(false)}>Cancel</Button>
-          </div>
-        </Card>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filtered.map(s => (
-          <Card key={s.user_id} className="relative">
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 rounded-full overflow-hidden bg-slate-100">
-                <UserAvatar role={UserRole.STUDENT} id={s.user_id} name={s.name} className="w-full h-full" />
-              </div>
-              <div>
-                <p className="font-black text-slate-900">{s.name}</p>
-                <p className="text-xs text-slate-500 font-bold uppercase tracking-tighter">ID: {s.user_id}</p>
-              </div>
-            </div>
-            <div className="space-y-1 text-sm">
-              <p><span className="text-slate-400 font-bold">Batch:</span> {s.batch_number}</p>
-              <p><span className="text-slate-400 font-bold">Phone:</span> {s.phone}</p>
-              <p><span className="text-slate-400 font-bold">Expires:</span> {formatDate(s.expiry_date)}</p>
-            </div>
-            {!isReadOnly && (
-              <div className="flex gap-2 mt-4">
-                <Button variant="danger" className="text-[10px] py-1 px-3" onClick={() => { if(confirm('Delete student?')) onDelete(s.user_id) }}>Delete</Button>
-              </div>
-            )}
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const ScheduleManager = ({ data, onAdd, onDelete, isReadOnly }: { data: AppState, onAdd: (t: any) => Promise<void>, onUpdate: (t: TestSchedule) => Promise<void>, onDelete: (id: string) => Promise<void>, isReadOnly: boolean }) => {
-  const [isAdding, setIsAdding] = useState(false);
-  const [newTest, setNewTest] = useState({ test_type: TestType.LISTENING, test_date: '', test_time: '', room_number: '', max_capacity: 10 });
-
-  return (
-    <div className="space-y-6">
-       <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-black text-slate-900">Test Schedules</h2>
-        {!isReadOnly && <Button onClick={() => setIsAdding(true)}>Create Session</Button>}
-      </div>
-
-      {isAdding && (
-        <Card title="Schedule New Session">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-            <select className="px-4 py-2 border rounded-xl" value={newTest.test_type} onChange={e => setNewTest({...newTest, test_type: e.target.value as TestType})}>
-              {Object.values(TestType).map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <input className="px-4 py-2 border rounded-xl" type="date" value={newTest.test_date} onChange={e => setNewTest({...newTest, test_date: e.target.value})} />
-            <input className="px-4 py-2 border rounded-xl" type="time" value={newTest.test_time} onChange={e => setNewTest({...newTest, test_time: e.target.value})} />
-            <input className="px-4 py-2 border rounded-xl" placeholder="Room" value={newTest.room_number} onChange={e => setNewTest({...newTest, room_number: e.target.value})} />
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={async () => {
-              await onAdd({ ...newTest, test_day: getWeekday(newTest.test_date) });
-              setIsAdding(false);
-            }}>Save Session</Button>
-            <Button variant="secondary" onClick={() => setIsAdding(false)}>Cancel</Button>
-          </div>
-        </Card>
-      )}
-
-      <div className="grid gap-4">
-        {data.tests.map(t => (
-          <Card key={t.test_id} className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="p-3 rounded-2xl bg-slate-100">
-                <svg className="w-6 h-6 text-[#6c3baa]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-              </div>
-              <div>
-                <p className="font-black text-slate-900">{t.test_type} - {t.test_day}</p>
-                <p className="text-sm text-slate-500 font-bold">{formatDate(t.test_date)} at {t.test_time} • Room {t.room_number}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <Badge color={t.current_registrations >= t.max_capacity ? 'red' : 'green'}>
-                {t.current_registrations}/{t.max_capacity} Enrolled
-              </Badge>
-              {!isReadOnly && (
-                <Button variant="danger" className="py-1 px-3 text-xs" onClick={() => onDelete(t.test_id)}>Cancel</Button>
-              )}
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const AdminResults = ({ data, onAddResult, onDeleteResult, isReadOnly }: { data: AppState, onAddResult: (r: any) => Promise<void>, onDeleteResult: (id: string) => Promise<void>, isReadOnly: boolean, onUpdateResult: any }) => {
-  const [isAdding, setIsAdding] = useState(false);
-  const [newRes, setNewRes] = useState({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0 });
-
-  return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-black text-slate-900">Result Management</h2>
-        {!isReadOnly && <Button onClick={() => setIsAdding(true)}>Publish Result</Button>}
-      </div>
-
-      {isAdding && (
-        <Card title="Entry Scores">
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-4">
-            <input className="px-4 py-2 border rounded-xl col-span-2 md:col-span-1" placeholder="Student ID" value={newRes.user_id} onChange={e => setNewRes({...newRes, user_id: e.target.value})} />
-            <select className="px-4 py-2 border rounded-xl col-span-2 md:col-span-1" value={newRes.test_id} onChange={e => setNewRes({...newRes, test_id: e.target.value})}>
-              <option value="">Select Test</option>
-              {data.tests.map(t => <option key={t.test_id} value={t.test_id}>{t.test_type} ({formatDate(t.test_date)})</option>)}
-            </select>
-            <input type="number" step="0.5" className="px-4 py-2 border rounded-xl" placeholder="L" onChange={e => setNewRes({...newRes, l: parseFloat(e.target.value)})} />
-            <input type="number" step="0.5" className="px-4 py-2 border rounded-xl" placeholder="R" onChange={e => setNewRes({...newRes, r: parseFloat(e.target.value)})} />
-            <input type="number" step="0.5" className="px-4 py-2 border rounded-xl" placeholder="W" onChange={e => setNewRes({...newRes, w: parseFloat(e.target.value)})} />
-            <input type="number" step="0.5" className="px-4 py-2 border rounded-xl" placeholder="S" onChange={e => setNewRes({...newRes, s: parseFloat(e.target.value)})} />
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={async () => {
-              const overall = calculateIELTSBand(newRes.l, newRes.r, newRes.w, newRes.s);
-              await onAddResult({ ...newRes, overall_score: overall });
-              setIsAdding(false);
-            }}>Publish</Button>
-            <Button variant="secondary" onClick={() => setIsAdding(false)}>Cancel</Button>
-          </div>
-        </Card>
-      )}
-
-      <div className="grid gap-4">
-        {data.results.map(r => {
-          const student = data.students.find(s => s.user_id === r.user_id);
-          return (
-            <Card key={r.result_id} className="flex justify-between items-center">
-              <div>
-                <p className="font-black text-slate-900">{student?.name || r.user_id}</p>
-                <div className="flex gap-4 text-xs font-bold text-slate-500 uppercase mt-1">
-                  <span>L: {r.listening_score}</span>
-                  <span>R: {r.reading_score}</span>
-                  <span>W: {r.writing_score}</span>
-                  <span>S: {r.speaking_score}</span>
-                  <Badge color="blue">Band: {r.overall_score}</Badge>
-                </div>
-              </div>
-              {!isReadOnly && <Button variant="danger" className="p-2" onClick={() => onDeleteResult(r.result_id)}>Remove</Button>}
-            </Card>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-const ReportsView = ({ data }: { data: AppState }) => {
-  const avgScores = data.results.length > 0 
-    ? (data.results.reduce((acc, curr) => acc + (curr.overall_score || 0), 0) / data.results.length).toFixed(1)
-    : '0.0';
-
-  return (
-    <div className="space-y-10">
-      <h2 className="text-3xl font-black text-slate-900">Performance Reports</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card title="Academic Summary">
-           <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="font-bold text-slate-500">Average Band Score</span>
-                <span className="text-2xl font-black text-[#6c3baa]">{avgScores}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="font-bold text-slate-500">Top Scoring Student</span>
-                <span className="font-black text-emerald-600">
-                  {data.results.length > 0 ? data.students.find(s => s.user_id === [...data.results].sort((a,b) => (b.overall_score || 0) - (a.overall_score || 0))[0].user_id)?.name : 'N/A'}
-                </span>
-              </div>
-           </div>
-        </Card>
-        <Card title="Activity Levels">
-           <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="font-bold text-slate-500">Active Registrations</span>
-                <span className="font-black text-blue-600">{data.registrations.length}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="font-bold text-slate-500">Scheduled Sessions</span>
-                <span className="font-black text-slate-900">{data.tests.length}</span>
-              </div>
-           </div>
-        </Card>
-      </div>
-    </div>
-  );
-};
-
-const AvailableTests = ({ student, data, onRegister }: { student: Student | null, data: AppState, onRegister: (t: TestSchedule) => Promise<void> }) => {
-  if (!student) return null;
-  const isExpired = new Date(student.expiry_date) < new Date();
-  
-  const upcoming = data.tests.filter(t => !t.is_closed && new Date(t.test_date) >= new Date());
-
-  return (
-    <div className="space-y-6">
-      <h2 className="text-3xl font-black text-slate-900">Available Test Slots</h2>
-      {isExpired ? (
-        <div className="bg-red-50 p-6 rounded-3xl border border-red-100 text-red-600 font-bold">
-          Your account has expired. Please contact administration to renew.
-        </div>
-      ) : (
-        <div className="grid gap-4">
-          {upcoming.map(t => {
-            const hasQuota = (student.remaining_tests as any)[t.test_type.toLowerCase()] > 0;
-            const isFull = t.current_registrations >= t.max_capacity;
-            const isAlreadyRegistered = data.registrations.some(r => r.user_id === student.user_id && r.test_id === t.test_id);
-
-            return (
-              <Card key={t.test_id} className="flex justify-between items-center">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-black text-slate-900 text-lg">{t.test_type}</p>
-                    <Badge color="sky">{t.room_number}</Badge>
-                  </div>
-                  <p className="text-sm font-bold text-slate-500">{formatDate(t.test_date)} • {t.test_time}</p>
-                </div>
-                <div className="flex items-center gap-4">
-                  {isAlreadyRegistered ? (
-                    <Badge color="green">Registered</Badge>
-                  ) : isFull ? (
-                    <Badge color="red">Session Full</Badge>
-                  ) : !hasQuota ? (
-                    <Badge color="amber">No Quota</Badge>
-                  ) : (
-                    <Button onClick={() => onRegister(t)}>Book Slot</Button>
-                  )}
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const RegistrationHistory = ({ student, data }: { student: Student | null, data: AppState }) => {
-  if (!student) return null;
-  const myRegs = data.registrations.filter(r => r.user_id === student.user_id);
-
-  return (
-    <div className="space-y-6">
-      <h2 className="text-3xl font-black text-slate-900">My Registrations</h2>
-      <div className="grid gap-4">
-        {myRegs.length === 0 ? (
-          <p className="text-slate-500 font-bold italic">No registrations found.</p>
-        ) : (
-          myRegs.map(r => {
-            const test = data.tests.find(t => t.test_id === r.test_id);
-            return (
-              <Card key={r.reg_id} className="flex justify-between items-center">
-                <div>
-                  <p className="font-black text-slate-900">{r.module_type}</p>
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-tighter">
-                    {test ? `${formatDate(test.test_date)} at ${test.test_time}` : 'Date Unknown'}
-                  </p>
-                </div>
-                <Badge color={r.status === RegistrationStatus.CONFIRMED ? 'green' : 'slate'}>{r.status}</Badge>
-              </Card>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
-};
-
-const StudentResults = ({ student, data }: { student: Student | null, data: AppState }) => {
-  if (!student) return null;
-  const myResults = data.results.filter(r => r.user_id === student.user_id);
-
-  return (
-    <div className="space-y-6">
-      <h2 className="text-3xl font-black text-slate-900">Performance Record</h2>
-      <div className="grid gap-6">
-        {myResults.length === 0 ? (
-          <p className="text-slate-500 font-bold italic">No published scores yet.</p>
-        ) : (
-          myResults.map(r => (
-            <Card key={r.result_id} className="relative overflow-hidden">
-               <div className="absolute top-0 right-0 p-6">
-                  <div className="w-16 h-16 rounded-2xl bg-[#6c3baa] text-white flex flex-col items-center justify-center">
-                    <span className="text-[8px] font-black uppercase">Band</span>
-                    <span className="text-2xl font-black leading-none">{r.overall_score}</span>
-                  </div>
-               </div>
-               <p className="text-slate-400 font-black uppercase tracking-widest text-xs mb-4">Official Result</p>
-               <div className="grid grid-cols-4 gap-4">
-                  <div className="bg-slate-50 p-4 rounded-2xl text-center">
-                    <p className="text-[10px] font-black text-slate-400 uppercase">Listening</p>
-                    <p className="text-xl font-black text-slate-900">{r.listening_score}</p>
-                  </div>
-                  <div className="bg-slate-50 p-4 rounded-2xl text-center">
-                    <p className="text-[10px] font-black text-slate-400 uppercase">Reading</p>
-                    <p className="text-xl font-black text-slate-900">{r.reading_score}</p>
-                  </div>
-                  <div className="bg-slate-50 p-4 rounded-2xl text-center">
-                    <p className="text-[10px] font-black text-slate-400 uppercase">Writing</p>
-                    <p className="text-xl font-black text-slate-900">{r.writing_score}</p>
-                  </div>
-                  <div className="bg-slate-50 p-4 rounded-2xl text-center">
-                    <p className="text-[10px] font-black text-slate-400 uppercase">Speaking</p>
-                    <p className="text-xl font-black text-slate-900">{r.speaking_score}</p>
-                  </div>
-               </div>
-               <p className="mt-4 text-[10px] font-bold text-slate-400 uppercase">Published: {formatDate(r.published_date)}</p>
-            </Card>
-          ))
-        )}
-      </div>
-    </div>
-  );
-};
-
-const StaffManager = ({ admins, onAdd, onDelete, isReadOnly }: { admins: Admin[], onAdd: (a: any) => Promise<void>, onDelete: (id: string) => Promise<void>, isReadOnly: boolean }) => {
-  const [isAdding, setIsAdding] = useState(false);
-  const [newAdmin, setNewAdmin] = useState({ username: '', password: '', role: UserRole.MODERATOR });
-
-  return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-black text-slate-900">Staff Management</h2>
-        {!isReadOnly && <Button onClick={() => setIsAdding(true)}>Add Staff</Button>}
-      </div>
-
-      {isAdding && (
-        <Card title="Register Staff Member">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-              <input className="px-4 py-2 border rounded-xl" placeholder="Username" value={newAdmin.username} onChange={e => setNewAdmin({...newAdmin, username: e.target.value})} />
-              <input className="px-4 py-2 border rounded-xl" placeholder="Password" value={newAdmin.password} onChange={e => setNewAdmin({...newAdmin, password: e.target.value})} />
-              <select className="px-4 py-2 border rounded-xl" value={newAdmin.role} onChange={e => setNewAdmin({...newAdmin, role: e.target.value as UserRole})}>
-                 <option value={UserRole.VIEWER}>Viewer</option>
-                 <option value={UserRole.MODERATOR}>Moderator</option>
-                 <option value={UserRole.CO_ADMIN}>Co-Admin</option>
-                 <option value={UserRole.ADMIN}>Admin</option>
-              </select>
-           </div>
-           <div className="flex gap-2">
-            <Button onClick={async () => {
-              await onAdd(newAdmin);
-              setIsAdding(false);
-            }}>Create Account</Button>
-            <Button variant="secondary" onClick={() => setIsAdding(false)}>Cancel</Button>
-          </div>
-        </Card>
-      )}
-
-      <div className="grid gap-4">
-        {admins.map(a => (
-          <Card key={a.admin_id} className="flex justify-between items-center">
-             <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center">
-                  <svg className="w-5 h-5 text-[#6c3baa]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-                </div>
-                <div>
-                   <p className="font-black text-slate-900">{a.username}</p>
-                   <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{a.role.replace('_', ' ')}</p>
-                </div>
-             </div>
-             {!isReadOnly && a.role !== UserRole.ADMIN && (
-                <Button variant="danger" className="py-1 px-3 text-xs" onClick={() => onDelete(a.admin_id)}>Remove</Button>
-             )}
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-};
 
 const LoginPage = ({ data, onLogin }: { data: AppState, onLogin: (id: string, role: UserRole) => void }) => {
   const [username, setUsername] = useState('');
@@ -823,78 +376,35 @@ const LoginPage = ({ data, onLogin }: { data: AppState, onLogin: (id: string, ro
   );
 };
 
-const StudentDashboard = ({ student }: { student: Student | null, data: AppState }) => {
-  if (!student) return null;
-  const totalPartial = student.remaining_tests.listening + student.remaining_tests.reading + student.remaining_tests.writing + student.remaining_tests.speaking;
-  const totalMock = student.remaining_tests.mock;
-  const isExpired = new Date(student.expiry_date) < new Date();
-
+const ColumnChart = ({ data }: { data: { week: string; students: number; mocks: number }[] }) => {
+  const maxVal = Math.max(...data.map(d => Math.max(d.students, d.mocks, 5)), 10);
+  
   return (
-    <div className="space-y-10 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-        <div className="flex items-center gap-5">
-           <div className="w-16 h-16 rounded-3xl overflow-hidden border-4 border-white/60 shadow-xl bg-white flex-shrink-0">
-              <UserAvatar role={UserRole.STUDENT} id={student.user_id} name={student.name} className="w-full h-full" />
-           </div>
-           <div>
-             <h2 className="text-4xl font-black text-slate-900 leading-tight">Welcome, {student.name}</h2>
-             <div className="flex items-center gap-2 mt-1">
-                <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Batch: {student.batch_number} • ID: {student.user_id}</p>
-                {isExpired ? <Badge color="red">ACCOUNT EXPIRED</Badge> : <Badge color="green">ACCOUNT ACTIVE</Badge>}
-             </div>
-           </div>
-        </div>
-        {!isExpired && (
-          <Link to="/tests" className="w-full md:w-auto">
-            <Button variant="primary" className="w-full md:px-10 py-4 shadow-xl">Book Now</Button>
-          </Link>
-        )}
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 md:gap-6">
-        <Card className="!bg-[#6c3baa] text-white overflow-hidden relative group !border-0">
-          <div className="relative z-10">
-             <p className="text-purple-200 font-black uppercase tracking-widest text-[8px] md:text-[10px] mb-1">Total Partial</p>
-             <p className="text-3xl md:text-5xl font-black leading-none">{totalPartial}</p>
+    <div className="w-full h-64 flex items-end justify-between gap-4 mt-8 px-2">
+      {data.map((d, i) => (
+        <div key={i} className="flex-1 flex flex-col items-center group relative">
+          <div className="flex gap-1.5 w-full items-end h-48">
+            <div 
+              className="flex-1 rounded-t-lg bg-[#6c3baa]/80 transition-all duration-700 hover:bg-[#6c3baa] relative group/bar"
+              style={{ height: `${(d.students / maxVal) * 100}%` }}
+            >
+              <div className="absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 group-hover/bar:opacity-100 transition-opacity bg-slate-800 text-white text-[10px] font-black px-2 py-1 rounded">
+                {d.students}
+              </div>
+            </div>
+            <div 
+              className="flex-1 rounded-t-lg bg-[#38b6ff]/80 transition-all duration-700 hover:bg-[#38b6ff] relative group/bar"
+              style={{ height: `${(d.mocks / maxVal) * 100}%` }}
+            >
+              <div className="absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 group-hover/bar:opacity-100 transition-opacity bg-slate-800 text-white text-[10px] font-black px-2 py-1 rounded">
+                {d.mocks}
+              </div>
+            </div>
           </div>
-          <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-110 transition-transform"></div>
-        </Card>
-        
-        <Card className="!bg-[#38b6ff] text-white overflow-hidden relative group !border-0">
-          <div className="relative z-10">
-             <p className="text-blue-100 font-black uppercase tracking-widest text-[8px] md:text-[10px] mb-1">Total Mock</p>
-             <p className="text-3xl md:text-5xl font-black leading-none">{totalMock}</p>
-          </div>
-          <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-110 transition-transform"></div>
-        </Card>
-      </div>
-      
-      <div>
-        <p className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] mb-6">Module Inventory</p>
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-          {Object.entries(student.remaining_tests).map(([key, val]) => (
-            <Card key={key} className="text-center group hover:bg-white/50 transition-colors">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 group-hover:text-[#6c3baa]">{key}</p>
-              <p className="text-3xl font-black text-slate-900">{val}</p>
-            </Card>
-          ))}
+          <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-4 whitespace-nowrap">{d.week}</p>
         </div>
-      </div>
+      ))}
     </div>
-  );
-};
-
-const NavLink: React.FC<{ to: string; children: React.ReactNode; onClick?: () => void }> = ({ to, children, onClick }) => {
-  const { pathname } = useLocation();
-  const isActive = pathname === to || (pathname === "" && to === "/");
-  return (
-    <Link 
-      to={to} 
-      onClick={onClick}
-      className={`flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-black transition-all ${isActive ? 'bg-purple-100/50 text-[#6c3baa] shadow-inner backdrop-blur-xl border border-white/20' : 'text-slate-500 hover:text-[#6c3baa] hover:bg-white/10'}`}
-    >
-      {children}
-    </Link>
   );
 };
 
@@ -905,19 +415,28 @@ const App = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  const fetchFullData = async () => {
-    setIsSyncing(true);
-    const cloudData = await SupabaseAPI.getData();
-    if (cloudData) {
-      setAppData(cloudData);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
-    }
-    setIsSyncing(false);
-  };
+  useEffect(() => {
+    const initCloud = async () => {
+      setIsSyncing(true);
+      const cloudData = await SupabaseAPI.getData();
+      if (cloudData) {
+        setAppData(cloudData);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
+      }
+      setIsSyncing(false);
+    };
+    initCloud();
+  }, []);
 
   useEffect(() => {
-    fetchFullData();
-  }, []);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    const syncTimer = setTimeout(async () => {
+      setIsSyncing(true);
+      await SupabaseAPI.saveData(appData);
+      setIsSyncing(false);
+    }, 1500);
+    return () => clearTimeout(syncTimer);
+  }, [appData]);
 
   const currentStudent = useMemo(() => {
     if (userRole === UserRole.STUDENT && loggedID) return appData.students.find(s => s.user_id === loggedID) || null;
@@ -929,21 +448,16 @@ const App = () => {
     return null;
   }, [appData.admins, loggedID, userRole]);
 
-  const handleLogin = async (id: string, role: UserRole) => {
-    setLoggedID(id);
-    setUserRole(role);
-    
-    if (role !== UserRole.STUDENT) {
-      await SupabaseAPI.purgeOldData();
-      await fetchFullData();
-    }
-  };
+  if (!loggedID || (userRole === UserRole.STUDENT && !currentStudent) || (userRole !== UserRole.STUDENT && userRole !== null && !currentAdmin)) {
+    return <LoginPage data={appData} onLogin={(id, role) => { 
+        setLoggedID(id); 
+        setUserRole(role); 
+        // Force direct jump to dashboard route on login
+        window.location.hash = '#/';
+    }} />;
+  }
 
   const isReadOnly = userRole === UserRole.VIEWER;
-
-  if (!loggedID || (userRole === UserRole.STUDENT && !currentStudent) || (userRole !== UserRole.STUDENT && userRole !== null && !currentAdmin)) {
-    return <LoginPage data={appData} onLogin={handleLogin} />;
-  }
 
   return (
     <HashRouter>
@@ -1036,10 +550,10 @@ const App = () => {
 
         <main className="flex-1 p-6 md:p-12 overflow-y-auto max-h-screen">
           <Routes>
-            <Route path="/" element={userRole === UserRole.STUDENT ? <StudentDashboard student={currentStudent} data={appData} /> : <AdminDashboard data={appData} />} />
+            <Route path="/" element={userRole === UserRole.STUDENT ? <StudentDashboard student={currentStudent!} data={appData} /> : <AdminDashboard data={appData} />} />
             <Route path="/students" element={<StudentManager students={appData.students} 
-                currentAdmin={currentAdmin} userRole={userRole} data={appData}
-                onAdd={async (s:any) => {
+                currentAdmin={currentAdmin} userRole={userRole}
+                onAdd={(s:any) => {
                   const existing = appData.students.find(x => x.user_id === s.user_id);
                   if (existing) { alert('User ID already exists.'); return null; }
                   const newStudent: Student = { 
@@ -1051,13 +565,9 @@ const App = () => {
                     created_at: new Date().toISOString() 
                   };
                   setAppData(prev => ({ ...prev, students: [...prev.students, newStudent] }));
-                  await SupabaseAPI.upsertStudent(newStudent);
                   return newStudent;
                 }} 
-                onUpdate={async (s: Student) => {
-                  setAppData(p => ({ ...p, students: p.students.map(x => x.user_id === s.user_id ? s : x) }));
-                  await SupabaseAPI.upsertStudent(s);
-                }}
+                onUpdate={(s: Student) => setAppData(p => ({ ...p, students: p.students.map(x => x.user_id === s.user_id ? s : x) }))}
                 onDelete={async (id:string) => {
                   setAppData(p => ({
                     ...p,
@@ -1067,84 +577,48 @@ const App = () => {
                   }));
                   await SupabaseAPI.deleteStudent(id);
                 }} 
-                isReadOnly={isReadOnly} 
+                data={appData} isReadOnly={isReadOnly} 
             />} />
             <Route path="/schedules" element={<ScheduleManager data={appData} 
-                onAdd={async (t:any) => {
-                  const newTest = { ...t, test_id: Math.random().toString(36).substr(2,6), current_registrations: 0, created_by: currentAdmin?.username || 'Admin', is_closed: false };
-                  setAppData(p => ({ ...p, tests: [...p.tests, newTest] }));
-                  await SupabaseAPI.upsertTest(newTest);
+                onAdd={(t:any) => {
+                  setAppData(p => ({ ...p, tests: [...p.tests, { ...t, test_id: Math.random().toString(36).substr(2,6), current_registrations: 0, created_by: currentAdmin?.username || 'Admin', is_closed: false, is_deleted: false }] }));
                 }}
-                onUpdate={async (t: TestSchedule) => {
-                  setAppData(p => ({ ...p, tests: p.tests.map(x => x.test_id === t.test_id ? t : x) }));
-                  await SupabaseAPI.upsertTest(t);
-                }}
+                onUpdate={(t: TestSchedule) => setAppData(p => ({ ...p, tests: p.tests.map(x => x.test_id === t.test_id ? t : x) }))}
                 onDelete={async (id:string) => {
+                  // Perform soft delete in state to hide it from scheduling views
+                  // while maintaining accessibility for score lookups
                   setAppData(p => ({ 
                     ...p, 
-                    tests: p.tests.filter(t => t.test_id !== id), 
-                    registrations: p.registrations.filter(r => r.test_id !== id), 
-                    results: p.results.filter(r => r.test_id !== id) 
+                    tests: p.tests.map(t => t.test_id === id ? { ...t, is_deleted: true } : t)
                   }));
                   await SupabaseAPI.deleteTest(id);
                 }}
                 isReadOnly={isReadOnly || userRole === UserRole.MODERATOR}
             />} />
             <Route path="/admin-results" element={<AdminResults data={appData} 
-                onAddResult={async (r:any) => {
-                  const newRes: Result = {
-                    result_id: Math.random().toString(36).substr(2,5),
-                    user_id: r.user_id,
-                    test_id: r.test_id,
-                    listening_score: r.l,
-                    reading_score: r.r,
-                    writing_score: r.w,
-                    speaking_score: r.s,
-                    overall_score: r.overall_score,
-                    published_by: currentAdmin?.username || 'Admin',
-                    published_date: new Date().toISOString()
-                  };
-                  setAppData(p => ({...p, results: [...p.results, newRes]}));
-                  await SupabaseAPI.upsertResult(newRes);
-                }}
-                onUpdateResult={async (r: Result) => {
-                  setAppData(p => ({...p, results: p.results.map(x => x.result_id === r.result_id ? { ...x, ...r } : x)}));
-                  await SupabaseAPI.upsertResult(r);
-                }}
-                onDeleteResult={async (id: string) => {
+                onAddResult={(r:any) => setAppData(p => ({...p, results: [...p.results, {...r, result_id: Math.random().toString(36).substr(2,5), published_by: currentAdmin?.username || 'Admin', published_date: new Date().toISOString()}]}))}
+                onUpdateResult={(r: Result) => setAppData(p => ({...p, results: p.results.map(x => x.result_id === r.result_id ? { ...x, ...r } : x)}))}
+                onDeleteResult={(id: string) => {
                    setAppData(p => ({ ...p, results: p.results.filter(r => r.result_id !== id) }));
-                   await SupabaseAPI.deleteResult(id);
                 }}
                 isReadOnly={isReadOnly}
             />} />
             <Route path="/reports" element={<ReportsView data={appData} />} />
-            <Route path="/tests" element={<AvailableTests student={currentStudent} data={appData} onRegister={async (t: any) => {
+            <Route path="/tests" element={<AvailableTests student={currentStudent} data={appData} onRegister={(t: any) => {
                 if (!currentStudent) return;
                 const key = t.test_type.toLowerCase() as keyof RemainingTests;
                 const newReg: Registration = { reg_id: Math.random().toString(36).substr(2, 9), user_id: currentStudent.user_id, test_id: t.test_id, module_type: t.test_type, registration_date: new Date().toISOString().split('T')[0], status: RegistrationStatus.CONFIRMED };
-                
-                const updatedTests = appData.tests.map(x => x.test_id === t.test_id ? { ...x, current_registrations: x.current_registrations + 1 } : x);
-                const updatedStudents = appData.students.map(s => s.user_id === currentStudent.user_id ? { ...s, remaining_tests: { ...s.remaining_tests, [key]: s.remaining_tests[key] - 1 } } : s);
-                
-                setAppData(prev => ({ ...prev, registrations: [...prev.registrations, newReg], tests: updatedTests, students: updatedStudents }));
-                
-                await Promise.all([
-                  SupabaseAPI.upsertRegistration(newReg),
-                  SupabaseAPI.upsertTest(updatedTests.find(x => x.test_id === t.test_id)!),
-                  SupabaseAPI.upsertStudent(updatedStudents.find(x => x.user_id === currentStudent.user_id)!)
-                ]);
-                
+                setAppData(prev => ({ ...prev, registrations: [...prev.registrations, newReg], tests: prev.tests.map(x => x.test_id === t.test_id ? { ...x, current_registrations: x.current_registrations + 1 } : x), students: prev.students.map(s => s.user_id === currentStudent.user_id ? { ...s, remaining_tests: { ...s.remaining_tests, [key]: s.remaining_tests[key] - 1 } } : s) }));
                 alert('Test successfully booked!');
             }} />} />
             <Route path="/history" element={<RegistrationHistory student={currentStudent} data={appData} />} />
             <Route path="/results" element={<StudentResults student={currentStudent} data={appData} />} />
             <Route path="/staff" element={<StaffManager admins={appData.admins} isReadOnly={isReadOnly}
-                onAdd={async (a: any) => {
+                onAdd={(a) => {
                   const na: Admin = { ...a, admin_id: Math.random().toString(36).substr(2, 6).toUpperCase(), created_by: currentAdmin?.username || 'Admin', created_at: new Date().toISOString() };
                   setAppData(p => ({ ...p, admins: [...p.admins, na] }));
-                  await SupabaseAPI.upsertAdmin(na);
                 }}
-                onDelete={async (id: string) => {
+                onDelete={async (id) => {
                   setAppData(p => ({ ...p, admins: p.admins.filter(x => x.admin_id !== id) }));
                   await SupabaseAPI.deleteAdmin(id);
                 }}
@@ -1154,6 +628,1280 @@ const App = () => {
         </main>
       </div>
     </HashRouter>
+  );
+};
+
+// --- Dashboards & Modules ---
+
+const StudentDashboard = ({ student, data }: { student: Student | null, data: AppState }) => {
+  if (!student) return null;
+  const totalPartial = student.remaining_tests.listening + student.remaining_tests.reading + student.remaining_tests.writing + student.remaining_tests.speaking;
+  const totalMock = student.remaining_tests.mock;
+  const isExpired = new Date(student.expiry_date) < new Date();
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <div className="flex items-center gap-5">
+           <div className="w-16 h-16 rounded-3xl overflow-hidden border-4 border-white/60 shadow-xl bg-white flex-shrink-0">
+              <UserAvatar role={UserRole.STUDENT} id={student.user_id} name={student.name} className="w-full h-full" />
+           </div>
+           <div>
+             <h2 className="text-4xl font-black text-slate-900 leading-tight">Welcome, {student.name}</h2>
+             <div className="flex items-center gap-2 mt-1">
+                <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Batch: {student.batch_number} • ID: {student.user_id}</p>
+                {isExpired ? <Badge color="red">ACCOUNT EXPIRED</Badge> : <Badge color="green">ACCOUNT ACTIVE</Badge>}
+             </div>
+           </div>
+        </div>
+        {!isExpired && (
+          <Link to="/tests" className="w-full md:w-auto">
+            <Button variant="primary" className="w-full md:px-10 py-4 shadow-xl">Book Now</Button>
+          </Link>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:gap-6">
+        <Card className="!bg-[#6c3baa] text-white overflow-hidden relative group !border-0">
+          <div className="relative z-10">
+             <p className="text-purple-200 font-black uppercase tracking-widest text-[8px] md:text-[10px] mb-1">Total Partial</p>
+             <p className="text-3xl md:text-5xl font-black leading-none">{totalPartial}</p>
+          </div>
+          <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-110 transition-transform"></div>
+        </Card>
+        
+        <Card className="!bg-[#38b6ff] text-white overflow-hidden relative group !border-0">
+          <div className="relative z-10">
+             <p className="text-blue-100 font-black uppercase tracking-widest text-[8px] md:text-[10px] mb-1">Total Mock</p>
+             <p className="text-3xl md:text-5xl font-black leading-none">{totalMock}</p>
+          </div>
+          <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-110 transition-transform"></div>
+        </Card>
+      </div>
+      
+      <div>
+        <p className="text-sm font-black text-slate-400 uppercase tracking-[0.2em] mb-6">Module Inventory</p>
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          {Object.entries(student.remaining_tests).map(([key, val]) => (
+            <Card key={key} className="text-center group hover:bg-white/50 transition-colors">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 group-hover:text-[#6c3baa]">{key}</p>
+              <p className="text-3xl font-black text-slate-900">{val}</p>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AdminDashboard = ({ data }: { data: AppState }) => {
+  const activeStudentsCount = useMemo(() => {
+    const today = new Date();
+    return data.students.filter(s => new Date(s.expiry_date) >= today).length;
+  }, [data.students]);
+
+  const recentActivity = useMemo(() => {
+    const activities: any[] = [];
+    data.students.slice(-5).forEach(s => activities.push({ id: `s-${s.user_id}`, type: 'Candidate Registered', label: s.name, time: s.created_at, icon: '👤' }));
+    data.registrations.slice(-5).forEach(r => {
+      const s = data.students.find(x => x.user_id === r.user_id);
+      activities.push({ id: `r-${r.reg_id}`, type: 'Test Booked', label: `${s?.name || 'User'} -> ${r.module_type}`, time: r.registration_date, icon: '📝' });
+    });
+    return activities.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 5);
+  }, [data.students, data.registrations]);
+
+  const weeklyData = useMemo(() => {
+    const now = new Date();
+    const weeks = [];
+    for (let i = 4; i >= 0; i--) {
+      const weekStart = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+      
+      const newStudents = data.students.filter(s => {
+        const d = new Date(s.created_at);
+        return d >= weekStart && d < weekEnd;
+      }).length;
+
+      const mockBookings = data.registrations.filter(r => {
+        const d = new Date(r.registration_date);
+        return r.module_type === TestType.MOCK && d >= weekStart && d < weekEnd;
+      }).length;
+
+      weeks.push({ 
+        week: `Week ${5-i}`, 
+        students: newStudents, 
+        mocks: mockBookings 
+      });
+    }
+    return weeks;
+  }, [data.students, data.registrations]);
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h2 className="text-4xl font-black text-slate-900 leading-tight tracking-tight">System Oversight</h2>
+          <p className="text-sm font-bold text-[#6c3baa] uppercase tracking-widest mt-1">Your Portal Statistic</p>
+        </div>
+        <div className="flex items-center gap-3 bg-white/40 backdrop-blur-3xl px-5 py-3 rounded-2xl border border-white/50 shadow-sm">
+          <div className="w-3 h-3 bg-[#38b6ff] rounded-full animate-pulse shadow-[0_0_10px_#38b6ff]"></div>
+          <p className="text-xs font-black uppercase tracking-tighter">Live Monitor Active</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+        {[
+          { label: 'Total Base', value: data.students.length, color: '#6c3baa' },
+          { label: 'Live Active', value: activeStudentsCount, color: BRAND_BLUE },
+          { label: 'Sessions', value: data.tests.length, color: '#6c3baa' },
+          { label: 'System Staff', value: data.admins.length, color: '#6c3baa' },
+        ].map(s => (
+          <Card key={s.label} className="group relative overflow-hidden transition-all hover:-translate-y-1">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 group-hover:text-[#38b6ff] transition-colors">{s.label}</p>
+            <p className="text-4xl font-black text-slate-900">{s.value}</p>
+            <div className="absolute right-[-10px] bottom-[-10px] opacity-5 group-hover:opacity-10 transition-opacity">
+               <svg width="80" height="80" viewBox="0 0 24 24" fill={s.color}><circle cx="12" cy="12" r="10"/></svg>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <Card title="Engagement Metrics" subtitle="Weekly New Enrollments vs. Mock Bookings">
+          <div className="flex items-center gap-6 mb-4">
+             <div className="flex items-center gap-2"><div className="w-3 h-3 bg-[#6c3baa] rounded-full"></div><span className="text-[10px] font-black uppercase text-slate-500">Candidates</span></div>
+             <div className="flex items-center gap-2"><div className="w-3 h-3 bg-[#38b6ff] rounded-full"></div><span className="text-[10px] font-black uppercase text-slate-500">Mock Tests</span></div>
+          </div>
+          <ColumnChart data={weeklyData} />
+        </Card>
+
+        <Card title="Activity Pulse" subtitle="Latest system transactions">
+          <div className="space-y-4">
+            {recentActivity.map(activity => (
+              <div key={activity.id} className="flex items-center gap-4 p-4 rounded-2xl bg-white/30 hover:bg-white/50 border border-white/40 transition-all group">
+                <div className="w-10 h-10 rounded-xl bg-white/60 flex items-center justify-center text-xl shadow-sm">
+                   {activity.icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                   <div className="flex justify-between items-center">
+                     <p className="text-[10px] font-black text-[#38b6ff] uppercase tracking-widest mb-0.5">{activity.type}</p>
+                     <p className="text-[9px] font-bold text-slate-400">{formatDate(activity.time)}</p>
+                   </div>
+                   <p className="text-sm font-black text-slate-800 truncate group-hover:text-[#6c3baa] transition-colors">{activity.label}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+const ReportsView = ({ data }: { data: AppState }) => {
+  const [filterType, setFilterType] = useState('ALL');
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const logs = useMemo(() => {
+    const list: any[] = [];
+    
+    data.students.forEach(s => list.push({ id: s.user_id, type: 'STUDENT_ADD', name: s.name, date: s.created_at, details: `Batch: ${s.batch_number} (Added by ${s.created_by})` }));
+    
+    data.registrations.forEach(r => {
+      const s = data.students.find(x => x.user_id === r.user_id);
+      list.push({ id: r.reg_id, type: 'TEST_BOOK', name: s?.name || r.user_id, date: r.registration_date, details: `Module: ${r.module_type} (Status: ${r.status})` });
+    });
+
+    data.results.forEach(res => {
+      const s = data.students.find(x => x.user_id === res.user_id);
+      list.push({ id: res.result_id, type: 'RESULT_PUB', name: s?.name || res.user_id, date: res.published_date, details: `Score Published (By ${res.published_by})` });
+    });
+
+    return list
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .filter(l => (filterType === 'ALL' || l.type === filterType))
+      .filter(l => l.name.toLowerCase().includes(searchTerm.toLowerCase()) || l.id.toLowerCase().includes(searchTerm.toLowerCase()));
+  }, [data, filterType, searchTerm]);
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <h2 className="text-4xl font-black text-slate-900 tracking-tight">System Reports</h2>
+        <div className="flex items-center gap-4 w-full md:w-auto">
+          <select value={filterType} onChange={e => setFilterType(e.target.value)} className="bg-white/40 backdrop-blur-xl border border-white/40 rounded-xl px-4 py-2 font-black text-xs uppercase outline-none focus:ring-2 focus:ring-[#6c3baa]">
+            <option value="ALL">All Activities</option>
+            <option value="STUDENT_ADD">Enrollments</option>
+            <option value="TEST_BOOK">Bookings</option>
+            <option value="RESULT_PUB">Results</option>
+          </select>
+          <input placeholder="Filter by user..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="bg-white/40 backdrop-blur-xl border border-white/40 rounded-xl px-4 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-[#6c3baa]" />
+        </div>
+      </div>
+
+      <div className="bg-white/30 backdrop-blur-[40px] border border-white/40 rounded-[2rem] overflow-hidden shadow-2xl">
+        <table className="w-full text-left text-sm border-collapse">
+          <thead className="bg-[#6c3baa] text-white">
+            <tr>
+              <th className="p-6 font-black uppercase text-[10px] tracking-widest">Event</th>
+              <th className="p-6 font-black uppercase text-[10px] tracking-widest">Candidate</th>
+              <th className="p-6 font-black uppercase text-[10px] tracking-widest">Timeline</th>
+              <th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Reference</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/20">
+            {logs.map((log, idx) => (
+              <tr key={idx} className="hover:bg-white/40 transition-colors group">
+                <td className="p-6">
+                  <Badge color={log.type === 'STUDENT_ADD' ? 'green' : log.type === 'TEST_BOOK' ? 'sky' : 'brand'}>{log.type.replace('_', ' ')}</Badge>
+                  <p className="mt-1 text-xs font-bold text-slate-500">{log.details}</p>
+                </td>
+                <td className="p-6 font-black text-slate-900">{log.name}</td>
+                <td className="p-6 font-bold text-slate-500">{formatDate(log.date)}</td>
+                <td className="p-6 text-right font-mono text-[10px] text-slate-400 group-hover:text-slate-800 transition-colors uppercase">{log.id}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, currentAdmin }: any) => {
+  const [showAdd, setShowAdd] = useState(false);
+  const [viewStudent, setViewStudent] = useState<Student | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<any>(null);
+  const [search, setSearch] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmError, setConfirmError] = useState('');
+  const [deleteCandidateID, setDeleteCandidateID] = useState<string | null>(null);
+
+  const [form, setForm] = useState({ 
+    user_id: '', name: '', phone: '', gender: Gender.MALE, batch_number: '', 
+    listening: 0, reading: 0, writing: 0, speaking: 0, mock: 0, 
+    expiry_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split('T')[0]
+  });
+
+  const filtered = useMemo(() => {
+    return [...students]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .filter((s: Student) => 
+        s.name.toLowerCase().includes(search.toLowerCase()) || 
+        s.user_id.toLowerCase().includes(search.toLowerCase()) || 
+        s.phone.includes(search) || 
+        s.batch_number.toLowerCase().includes(search.toLowerCase())
+      );
+  }, [students, search]);
+
+  const handleAddSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newStudent = onAdd({ 
+      user_id: form.user_id, 
+      name: form.name, 
+      phone: form.phone, 
+      gender: form.gender, 
+      batch_number: form.batch_number, 
+      expiry_date: form.expiry_date,
+      remaining_tests: { 
+        listening: form.listening, 
+        reading: form.reading, 
+        writing: form.writing, 
+        speaking: form.speaking, 
+        mock: form.mock 
+      } 
+    });
+    if (newStudent) {
+      setViewStudent(newStudent);
+      setShowAdd(false);
+      setForm({ 
+        user_id: '', name: '', phone: '', gender: Gender.MALE, batch_number: '', 
+        listening: 0, reading: 0, writing: 0, speaking: 0, mock: 0,
+        expiry_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split('T')[0]
+      });
+    }
+  };
+
+  const handleUpdateBalance = () => {
+    if (!currentAdmin || confirmPassword !== currentAdmin.password) { setConfirmError('Unauthorized password.'); return; }
+    if (editForm) { 
+      onUpdate(editForm); 
+      setViewStudent({ ...editForm }); 
+      setShowConfirmModal(false); 
+      setIsEditing(false);
+      setConfirmPassword(''); 
+      setConfirmError(''); 
+    }
+  };
+
+  const handleOpenProfile = (s: Student) => {
+    setViewStudent(s);
+    setEditForm({ ...s });
+    setIsEditing(false);
+  };
+
+  const confirmDeleteStudent = () => {
+    if (deleteCandidateID) {
+      onDelete(deleteCandidateID);
+      setDeleteCandidateID(null);
+    }
+  };
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <h2 className="text-4xl font-black text-slate-900 leading-tight">All Students</h2>
+        <div className="flex flex-col sm:flex-row items-center justify-end w-full md:w-auto gap-4">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search candidates..." />
+          {!isReadOnly && <Button onClick={() => setShowAdd(true)} variant="primary" className="px-8 whitespace-nowrap">+ Register</Button>}
+        </div>
+      </div>
+
+      <ConfirmationModal 
+        isOpen={!!deleteCandidateID}
+        title="Remove Candidate"
+        message="Are you sure you want to permanently remove this candidate? This will wipe all their profile data and account access from the database."
+        confirmText="Confirm Remove"
+        onCancel={() => setDeleteCandidateID(null)}
+        onConfirm={confirmDeleteStudent}
+      />
+
+      {showAdd && (
+        <Card title="Register New Candidate">
+          <form onSubmit={handleAddSubmit} className="space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Candidate ID</label><input placeholder="Ex: HA-ST-101" required value={form.user_id} onChange={e => setForm({...form, user_id: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl focus:ring-4 focus:ring-purple-100 outline-none text-slate-900 font-bold bg-white/60" /></div>
+              <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Full Name</label><input placeholder="Ex: John Doe" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl focus:ring-4 focus:ring-purple-100 outline-none text-slate-900 font-bold bg-white/60" /></div>
+              <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Gender</label><select value={form.gender} onChange={e => setForm({...form, gender: e.target.value as Gender})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl font-bold bg-white/60 outline-none focus:ring-4 focus:ring-purple-100"><option value={Gender.MALE}>Male</option><option value={Gender.FEMALE}>Female</option><option value={Gender.OTHERS}>Others</option></select></div>
+              <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Phone</label><input placeholder="+880..." required value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl outline-none text-slate-900 font-bold bg-white/60 focus:ring-4 focus:ring-purple-100" /></div>
+              <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Batch</label><input placeholder="Ex: IELTS-22" required value={form.batch_number} onChange={e => setForm({...form, batch_number: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl outline-none text-slate-900 font-bold bg-white/60 focus:ring-4 focus:ring-purple-100" /></div>
+              <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Account Expiry Date</label><input type="date" required value={form.expiry_date} onChange={e => setForm({...form, expiry_date: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl outline-none text-slate-900 font-bold bg-white/60 focus:ring-4 focus:ring-purple-100" /></div>
+            </div>
+            <div className="bg-slate-50/40 backdrop-blur-md p-8 rounded-3xl border border-slate-100/50">
+              <p className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6">Initial Balance</p>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                {['listening','reading','writing','speaking','mock'].map(key => (
+                  <div key={key} className="space-y-1.5 text-center">
+                    <label className="text-[10px] font-black text-slate-500 uppercase block">{key}</label>
+                    <input type="number" value={(form as any)[key]} onChange={e => setForm({...form, [key]: parseInt(e.target.value) || 0})} className="w-full border-2 border-white/50 rounded-2xl p-3 text-center font-black text-[#6c3baa] bg-white/40 shadow-sm outline-none focus:ring-4 focus:ring-purple-100" />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-3"><Button variant="secondary" onClick={() => setShowAdd(false)}>Discard</Button><Button variant="primary" type="submit" className="px-10">Create Candidate Profile</Button></div>
+          </form>
+        </Card>
+      )}
+
+      {viewStudent && (
+        <div className="fixed inset-0 bg-[#6c3baa]/20 backdrop-blur-2xl z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="max-w-4xl w-full" onClick={e => e.stopPropagation()}>
+            <Card className="!p-0 shadow-2xl rounded-[2.5rem] overflow-hidden !bg-white/40 !backdrop-blur-3xl !border-white/60" title="">
+              <div className="bg-[#6c3baa]/90 backdrop-blur-xl p-10 text-white flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                <div className="flex items-center gap-6">
+                  <div className="w-24 h-24 rounded-[2rem] overflow-hidden border-4 border-white/60 shadow-xl bg-white flex-shrink-0">
+                    <UserAvatar role={UserRole.STUDENT} id={viewStudent.user_id} name={viewStudent.name} className="w-full h-full" />
+                  </div>
+                  <div>
+                    {isEditing ? (
+                      <div className="space-y-2">
+                         <input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} className="bg-white/20 border-b-2 border-white font-black text-2xl outline-none px-2 w-full text-white placeholder-white/50" />
+                         <div className="flex gap-2 text-sm font-bold opacity-80 uppercase tracking-widest">ID: {viewStudent.user_id}</div>
+                      </div>
+                    ) : (
+                      <>
+                        <h3 className="text-3xl font-black">{viewStudent.name}</h3>
+                        <p className="text-purple-100 font-bold mt-1 text-sm tracking-widest uppercase">ID: {viewStudent.user_id} • {viewStudent.gender}</p>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/20 w-full md:w-64">
+                  <p className="text-[10px] font-black text-purple-100 uppercase tracking-widest mb-2 text-center">System Access Key</p>
+                  {isEditing ? (
+                     <input value={editForm.password} onChange={e => setEditForm({...editForm, password: e.target.value})} className="bg-white/10 text-center font-black rounded-lg p-2 outline-none w-full text-white" />
+                  ) : (
+                     <div className="flex items-center justify-center gap-2"><PasswordInput value={viewStudent.password} onChange={()=>{}} disabled className="!bg-transparent !p-0 !border-0 scale-90" /></div>
+                  )}
+                </div>
+              </div>
+              <div className="p-10 space-y-10">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                   <div className="space-y-6">
+                      <p className="text-sm font-black text-slate-900 uppercase tracking-widest border-b pb-2">Profile Information</p>
+                      {isEditing ? (
+                        <div className="space-y-5">
+                          <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Phone Number</label><input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
+                          <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Batch Number</label><input value={editForm.batch_number} onChange={e => setEditForm({...editForm, batch_number: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
+                          <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Validity Expiry</label><input type="date" value={editForm.expiry_date} onChange={e => setEditForm({...editForm, expiry_date: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-6">
+                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Phone</p><p className="font-black text-slate-700">{viewStudent.phone}</p></div>
+                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Batch</p><p className="font-black text-slate-700">{viewStudent.batch_number}</p></div>
+                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Account Expiry</p><p className="font-black text-slate-700">{formatDate(viewStudent.expiry_date)}</p></div>
+                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Status</p>{new Date(viewStudent.expiry_date) < new Date() ? <Badge color="red">EXPIRED</Badge> : <Badge color="green">ACTIVE</Badge>}</div>
+                        </div>
+                      )}
+                   </div>
+                   <div className="bg-white/20 p-8 rounded-[2rem] border border-white/40 backdrop-blur-md">
+                      <p className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6">Module Balances</p>
+                      <div className="grid grid-cols-2 gap-4">
+                        {Object.entries(editForm?.remaining_tests || viewStudent.remaining_tests).map(([key, val]) => (
+                          <div key={key} className="text-center bg-white/40 p-4 rounded-2xl shadow-sm border border-white/40">
+                            <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">{key}</label>
+                            {isEditing ? (
+                              <input type="number" value={val as number} onChange={e => setEditForm({ ...editForm, remaining_tests: { ...editForm.remaining_tests, [key]: parseInt(e.target.value) || 0 } })} className="w-full text-center font-black text-[#6c3baa] bg-white/60 rounded-xl outline-none py-1" />
+                            ) : (
+                              <div className="font-black text-slate-900 text-2xl">{val as number}</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                   </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-6 border-t border-white/20 pt-8">
+                  <div className="flex gap-4">
+                    {!isReadOnly && (
+                      isEditing ? (
+                        <>
+                          <Button variant="primary" onClick={() => setShowConfirmModal(true)}>Save Changes</Button>
+                          <Button variant="secondary" onClick={() => { setIsEditing(false); setEditForm({...viewStudent}); }}>Cancel</Button>
+                        </>
+                      ) : (
+                        <Button variant="secondary" onClick={() => setIsEditing(true)}>Edit Profile</Button>
+                      )
+                    )}
+                  </div>
+                  <Button onClick={() => { setViewStudent(null); setEditForm(null); setIsEditing(false); }} variant="primary" className="w-full sm:w-auto px-12">Close Portal</Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {showConfirmModal && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-2xl z-[60] flex items-center justify-center p-4">
+          <Card className="max-w-md w-full !rounded-[2rem] !bg-white/80" title="Admin Authorization">
+            <div className="space-y-6">
+              <p className="text-sm text-slate-500 font-medium">Please enter your admin password to authorize profile modifications.</p>
+              <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Enter password" />
+              {confirmError && <p className="text-red-500 text-xs font-black bg-red-50 p-3 rounded-xl">{confirmError}</p>}
+              <div className="flex justify-end gap-3">
+                <Button variant="secondary" onClick={() => { setShowConfirmModal(false); setConfirmPassword(''); setConfirmError(''); }}>Cancel</Button>
+                <Button variant="primary" onClick={handleUpdateBalance} className="px-8">Verify & Save</Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm border-collapse min-w-[750px]">
+            <thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white">
+              <tr>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">ID</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Candidate Details</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Access Key</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Status</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px] text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/20">
+              {filtered.map((s:any) => {
+                const isExpired = new Date(s.expiry_date) < new Date();
+                return (
+                  <tr key={s.user_id} className="hover:bg-white/40 transition-colors group">
+                    <td className="p-6 font-black text-[#6c3baa]">{s.user_id}</td>
+                    <td className="p-6">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-2xl overflow-hidden border border-white/40 bg-white/40 flex-shrink-0">
+                          <UserAvatar role={UserRole.STUDENT} id={s.user_id} name={s.name} className="w-full h-full" />
+                        </div>
+                        <div>
+                          <p className="font-black text-slate-900">{s.name}</p>
+                          <p className="text-slate-400 font-bold text-[10px] uppercase mt-0.5">Batch: {s.batch_number} • {s.phone}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-6 font-mono font-black text-slate-400 group-hover:text-slate-900 transition-colors">{s.password}</td>
+                    <td className="p-6">
+                      {isExpired ? <Badge color="red">EXPIRED</Badge> : <Badge color="green">ACTIVE</Badge>}
+                    </td>
+                    <td className="p-6 text-right space-x-3 whitespace-nowrap">
+                      <button onClick={() => handleOpenProfile(s)} className="text-[#6c3baa] font-black text-xs hover:underline uppercase tracking-widest">Portal</button>
+                      {!isReadOnly && <button onClick={() => setDeleteCandidateID(s.user_id)} className="text-red-400 font-black text-xs hover:text-red-600 hover:underline uppercase tracking-widest">Remove</button>}
+                    </td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && <tr><td colSpan={5} className="p-20 text-center text-slate-400 font-black italic">No candidate records found.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data: AppState, onAdd: (t: any) => void, onUpdate: (t: TestSchedule) => void, onDelete: (id: string) => void, isReadOnly: boolean }) => {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingTest, setEditingTest] = useState<TestSchedule | null>(null);
+  const [search, setSearch] = useState('');
+  const [viewSlotID, setViewSlotID] = useState<string | null>(null);
+  const [form, setForm] = useState({ test_type: TestType.LISTENING, test_day: 'Monday', test_date: '', test_time: '', room_number: '', max_capacity: 10, is_closed: false });
+  const [deleteSessionID, setDeleteSessionID] = useState<string | null>(null);
+  
+  const filtered = data.tests.filter(t => 
+    !t.is_deleted && (
+    t.test_type.toLowerCase().includes(search.toLowerCase()) || 
+    t.room_number.toLowerCase().includes(search.toLowerCase()) || 
+    t.test_day.toLowerCase().includes(search.toLowerCase())
+    )
+  );
+
+  const currentViewedTest = useMemo(() => {
+    return data.tests.find(t => t.test_id === viewSlotID) || null;
+  }, [data.tests, viewSlotID]);
+
+  const studentList = useMemo(() => {
+    if (!viewSlotID) return [];
+    const ids = data.registrations.filter(r => r.test_id === viewSlotID).map(r => r.user_id);
+    return data.students.filter(s => ids.includes(s.user_id));
+  }, [data.registrations, data.students, viewSlotID]);
+
+  const handleDateChange = (date: string) => {
+    setForm(prev => ({ ...prev, test_date: date, test_day: getWeekday(date) }));
+  };
+
+  const startEdit = (t: TestSchedule) => {
+    setEditingTest(t);
+    setForm({ ...t });
+    setShowAdd(true);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (editingTest) {
+      onUpdate({ ...editingTest, ...form });
+    } else {
+      onAdd(form);
+    }
+    setShowAdd(false);
+    setEditingTest(null);
+    setForm({ test_type: TestType.LISTENING, test_day: 'Monday', test_date: '', test_time: '', room_number: '', max_capacity: 10, is_closed: false });
+  };
+
+  const downloadExcel = () => {
+    if (!currentViewedTest || studentList.length === 0) return;
+    
+    const headers = ["Name", "Batch number", "Module name", "Room number", "ID number", "Module date", "Module time", "Module day"];
+    
+    let tableHtml = '<html><head><meta charset="utf-8"></head><body><table border="1">';
+    
+    // Add Header Row
+    tableHtml += '<tr>';
+    headers.forEach(h => {
+      tableHtml += `<th style="background-color:#6c3baa; color:white; font-weight:bold;">${h}</th>`;
+    });
+    tableHtml += '</tr>';
+
+    // Add Student Data Rows (Standard vertical format)
+    studentList.forEach(s => {
+      tableHtml += '<tr>';
+      tableHtml += `<td>${s.name}</td>`;
+      tableHtml += `<td>${s.batch_number}</td>`;
+      tableHtml += `<td>${currentViewedTest.test_type}</td>`;
+      tableHtml += `<td>${currentViewedTest.room_number}</td>`;
+      tableHtml += `<td>${s.user_id}</td>`;
+      tableHtml += `<td>${formatDate(currentViewedTest.test_date)}</td>`;
+      tableHtml += `<td>${currentViewedTest.test_time}</td>`;
+      tableHtml += `<td>${currentViewedTest.test_day}</td>`;
+      tableHtml += '</tr>';
+    });
+
+    tableHtml += '</table></body></html>';
+
+    const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Candidates_${currentViewedTest.test_type}_${currentViewedTest.test_date}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmDeleteSession = () => {
+    if (deleteSessionID) {
+      onDelete(deleteSessionID);
+      setDeleteSessionID(null);
+    }
+  };
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <h2 className="text-4xl font-black text-slate-900 leading-tight">Session Scheduling</h2>
+        <div className="flex flex-col sm:flex-row items-center justify-end w-full md:w-auto gap-4">
+          <SearchInput value={search} onChange={setSearch} placeholder="Search slots..." />
+          {!isReadOnly && <Button onClick={() => { setEditingTest(null); setShowAdd(true); }} variant="primary" className="px-8 whitespace-nowrap">+ New Slot</Button>}
+        </div>
+      </div>
+
+      <ConfirmationModal 
+        isOpen={!!deleteSessionID}
+        title="Delete Session"
+        message="Are you sure you want to delete this test session? It will be removed from the active schedule, but historical bookings and published results will remain visible in candidate profiles."
+        confirmText="Confirm Delete"
+        onCancel={() => setDeleteSessionID(null)}
+        onConfirm={confirmDeleteSession}
+      />
+
+      {!isReadOnly && showAdd && (
+        <Card title={editingTest ? "Edit Test Session" : "Publish New Test Slot"}>
+          <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Module</label><select value={form.test_type} onChange={e => setForm({...form, test_type: e.target.value as TestType})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md outline-none focus:ring-4 focus:ring-purple-100">{Object.values(TestType).map(v => <option key={v} value={v}>{v}</option>)}</select></div>
+            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</label><input type="date" required value={form.test_date} onChange={e => handleDateChange(e.target.value)} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md outline-none focus:ring-4 focus:ring-purple-100" /></div>
+            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Day (Auto)</label><input readOnly value={form.test_day} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-400 bg-slate-50/50 backdrop-blur-md outline-none" /></div>
+            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Time</label><input placeholder="Ex: 09:30 AM" required value={form.test_time} onChange={e => setForm({...form, test_time: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md outline-none focus:ring-4 focus:ring-purple-100" /></div>
+            <div className="space-y-1.5 md:col-span-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Location / Room</label><input placeholder="Ex: Room 4 or Hall B" required value={form.room_number} onChange={e => setForm({...form, room_number: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md outline-none focus:ring-4 focus:ring-purple-100" /></div>
+            <div className="space-y-1.5 md:col-span-1"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Max Capacity</label><input type="number" min="1" placeholder="Capacity" required value={form.max_capacity} onChange={e => setForm({...form, max_capacity: parseInt(e.target.value) || 0})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md outline-none focus:ring-4 focus:ring-purple-100" /></div>
+            <div className="md:col-span-1 flex items-center h-full pt-4">
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input type="checkbox" checked={form.is_closed} onChange={e => setForm({...form, is_closed: e.target.checked})} className="w-6 h-6 rounded-lg border-slate-300 text-[#6c3baa] focus:ring-[#6c3baa]" />
+                <span className="font-black text-slate-700 uppercase text-xs">Close Session Manually</span>
+              </label>
+            </div>
+            <div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => { setShowAdd(false); setEditingTest(null); }}>Cancel</Button><Button variant="primary" type="submit" className="px-10">{editingTest ? "Update Session" : "Confirm Session"}</Button></div>
+          </form>
+        </Card>
+      )}
+
+      {viewSlotID && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-3xl z-50 flex items-center justify-center p-4">
+          <div className="max-w-2xl w-full" onClick={e => e.stopPropagation()}>
+            <Card className="!p-0 overflow-hidden shadow-2xl rounded-3xl !bg-white/90" title="">
+              <div className="p-8 border-b flex justify-between items-center bg-slate-50/50">
+                <h3 className="text-xl font-black text-slate-900">Enrolled Candidates</h3>
+                {studentList.length > 0 && <Button onClick={downloadExcel} variant="success" className="text-xs px-4">Download EXCEL</Button>}
+              </div>
+              <div className="p-8 max-h-[50vh] overflow-y-auto space-y-3">
+                {studentList.length > 0 ? studentList.map(s => (
+                  <div key={s.user_id} className="p-4 bg-white/40 backdrop-blur-md border border-slate-200 rounded-2xl flex justify-between items-center hover:bg-white hover:shadow-lg transition-all group">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl overflow-hidden border border-slate-200 bg-white flex-shrink-0">
+                        <UserAvatar role={UserRole.STUDENT} id={s.user_id} name={s.name} className="w-full h-full" />
+                      </div>
+                      <div>
+                        <p className="font-black text-slate-800">{s.name}</p>
+                        <p className="text-[10px] text-slate-400 font-black uppercase tracking-tighter">ID: {s.user_id}</p>
+                      </div>
+                    </div>
+                    <Badge color="brand">Batch {s.batch_number}</Badge>
+                  </div>
+                )) : <p className="text-center py-20 text-slate-400 font-black italic bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">No candidates have registered for this slot yet.</p>}
+              </div>
+              <div className="p-6 flex justify-end border-t border-slate-100"><Button onClick={() => setViewSlotID(null)} variant="primary" className="px-10">Close Window</Button></div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm border-collapse min-w-[700px]">
+            <thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white">
+              <tr>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Test Module</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Timeline</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px] text-center">Registrations</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px] text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/20">
+              {filtered.map((t:any) => (
+                <tr key={t.test_id} className="hover:bg-white/40 transition-colors">
+                  <td className="p-6 font-black text-[#6c3baa]">{t.test_type}</td>
+                  <td className="p-6">
+                    <p className="font-black text-slate-900">{t.test_day} • {t.room_number}</p>
+                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest mt-0.5">{formatDate(t.test_date)} at {t.test_time}</p>
+                  </td>
+                  <td className="p-6 text-center">
+                    <span className={`px-4 py-1.5 rounded-full font-black text-xs bg-white/50 text-[#6c3baa] border border-[#6c3baa]/20 shadow-sm`}>
+                      {t.current_registrations} / {t.max_capacity} Used
+                    </span>
+                    <div className="mt-1">{t.is_closed || t.current_registrations >= t.max_capacity ? <Badge color="red">{t.current_registrations >= t.max_capacity ? 'FULL' : 'CLOSED'}</Badge> : <Badge color="green">OPEN</Badge>}</div>
+                  </td>
+                  <td className="p-6 text-right space-x-3 whitespace-nowrap">
+                    <button onClick={() => setViewSlotID(t.test_id)} className="text-[#6c3baa] font-black text-xs hover:underline uppercase tracking-widest">Candidates</button>
+                    {!isReadOnly && <button onClick={() => startEdit(t)} className="text-[#6c3baa] font-black text-xs hover:underline uppercase tracking-widest">Edit</button>}
+                    {!isReadOnly && <button onClick={() => setDeleteSessionID(t.test_id)} className="text-red-400 font-black text-xs hover:text-red-600 hover:underline uppercase tracking-widest">Delete</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AvailableTests = ({ student, data, onRegister }: any) => {
+  const [search, setSearch] = useState('');
+  const [confirmTest, setConfirmTest] = useState<TestSchedule | null>(null);
+  const [passInput, setPassInput] = useState('');
+  const [error, setError] = useState('');
+  
+  if (!student) return null;
+  const isAccountExpired = new Date(student.expiry_date) < new Date();
+
+  const filtered = data.tests.filter((t: TestSchedule) => 
+    !t.is_deleted && (
+    t.test_type.toLowerCase().includes(search.toLowerCase()) || 
+    t.room_number.toLowerCase().includes(search.toLowerCase()) || 
+    t.test_day.toLowerCase().includes(search.toLowerCase())
+    )
+  );
+
+  const handleBooking = () => {
+    if (passInput === student.password) { 
+      if (confirmTest && confirmTest.current_registrations >= confirmTest.max_capacity) {
+        setError('Session reached full capacity.');
+        return;
+      }
+      onRegister(confirmTest); 
+      setConfirmTest(null); 
+      setPassInput(''); 
+      setError(''); 
+    } 
+    else { setError('Incorrect security key.'); }
+  };
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <h2 className="text-4xl font-black text-slate-900 tracking-tight">Session Booking</h2>
+        <SearchInput value={search} onChange={setSearch} placeholder="Find sessions..." />
+      </div>
+
+      {isAccountExpired && (
+        <Card className="!bg-red-500/10 !border-red-500/20 text-center">
+           <p className="text-red-600 font-black text-xl mb-2 uppercase tracking-tight">Access Restricted: Account Expired</p>
+           <p className="text-slate-500 font-bold max-w-lg mx-auto">Your portal validation has expired on <span className="font-black text-red-600 underline">{formatDate(student.expiry_date)}</span>. Contact front office for renewal.</p>
+        </Card>
+      )}
+
+      {confirmTest && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-3xl z-50 flex items-center justify-center p-4">
+          <div className="max-w-md w-full" onClick={e => e.stopPropagation()}>
+            <Card className="!rounded-[2.5rem] shadow-2xl p-10 !bg-white/95" title="Identity Verification">
+              <div className="mb-8 space-y-3 p-5 bg-purple-50 rounded-3xl border border-purple-100 shadow-inner">
+                 <p className="text-[10px] font-black text-[#6c3baa] uppercase tracking-[0.2em]">Confirming Booking</p>
+                 <p className="text-2xl font-black text-slate-900">{confirmTest.test_type}</p>
+                 <div className="grid grid-cols-2 gap-y-3 text-xs">
+                    <div><p className="font-bold text-slate-400">Date</p><p className="font-black text-slate-700">{formatDate(confirmTest.test_date)}</p></div>
+                    <div><p className="font-bold text-slate-400">Time</p><p className="font-black text-slate-700">{confirmTest.test_time}</p></div>
+                 </div>
+              </div>
+              <div className="space-y-6">
+                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Confirm Identity Key</label>
+                <PasswordInput value={passInput} onChange={setPassInput} placeholder="Portal Password" />
+                {error && <p className="text-red-500 text-xs font-black bg-red-50 p-3 rounded-xl">{error}</p>}
+                <div className="flex gap-4 pt-4">
+                  <Button variant="secondary" onClick={() => { setConfirmTest(null); setPassInput(''); setError(''); }} className="flex-1">Discard</Button>
+                  <Button variant="primary" onClick={handleBooking} className="flex-[1.5]">Confirm Booking</Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+        {filtered.map((t:any) => {
+          const registered = data.registrations.some((r:any) => r.user_id === student.user_id && r.test_id === t.test_id);
+          const remaining = (student.remaining_tests as any)[t.test_type.toLowerCase()];
+          const noBalance = remaining <= 0;
+          const isFull = t.current_registrations >= t.max_capacity;
+          const isManuallyClosed = t.is_closed;
+          const seatsLeft = Math.max(0, t.max_capacity - t.current_registrations);
+
+          return (
+            <Card key={t.test_id} className={`group hover:scale-[1.02] transition-all hover:shadow-2xl ${isAccountExpired ? 'opacity-60 pointer-events-none' : ''}`}>
+              <div className="flex justify-between items-start mb-6">
+                 <div className="w-14 h-14 bg-purple-100/50 rounded-[1.5rem] flex items-center justify-center text-[#6c3baa] font-black group-hover:bg-[#6c3baa] group-hover:text-white transition-all transform group-hover:rotate-6">
+                    {t.test_type[0]}
+                 </div>
+                 <div className="flex flex-col gap-2 items-end">
+                    {isManuallyClosed ? <Badge color="red">CLOSED</Badge> : isFull ? <Badge color="red">SESSION FULL</Badge> : <Badge color="sky">{seatsLeft} SEATS LEFT</Badge>}
+                 </div>
+              </div>
+              
+              <p className="text-2xl font-black text-slate-900 mb-1">{t.test_type}</p>
+              <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">{t.test_day} • {t.room_number}</p>
+              
+              <div className="grid grid-cols-2 gap-4 mb-8">
+                 <div className="bg-white/40 p-3 rounded-2xl border border-white/60">
+                    <p className="text-[9px] font-black text-slate-400 uppercase mb-1">DATE</p>
+                    <p className="font-black text-slate-700 text-sm">{formatDate(t.test_date)}</p>
+                 </div>
+                 <div className="bg-white/40 p-3 rounded-2xl border border-white/60">
+                    <p className="text-[9px] font-black text-slate-400 uppercase mb-1">TIME</p>
+                    <p className="font-black text-slate-700 text-sm">{t.test_time}</p>
+                 </div>
+              </div>
+
+              {registered ? (
+                <div className="w-full py-4 rounded-2xl bg-emerald-100/50 backdrop-blur-md text-emerald-700 font-black text-center text-xs uppercase border border-emerald-200/50">RESERVATION CONFIRMED</div>
+              ) : (
+                <Button disabled={noBalance || isManuallyClosed || isAccountExpired || isFull} onClick={() => setConfirmTest(t)} variant={noBalance ? 'secondary' : 'primary'} className="w-full py-4">
+                  {isAccountExpired ? 'Account Expired' : isFull ? 'Session Full' : isManuallyClosed ? 'Session Closed' : noBalance ? 'Insufficient Balance' : 'Book Session'}
+                </Button>
+              )}
+            </Card>
+          );
+        })}
+        {filtered.length === 0 && <div className="col-span-full py-20 text-center text-slate-400 italic">No available sessions found.</div>}
+      </div>
+    </div>
+  );
+};
+
+const RegistrationHistory = ({ student, data }: any) => {
+  if (!student) return null;
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <h2 className="text-4xl font-black text-slate-900 leading-tight tracking-tight">Booking Log</h2>
+      <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-[2rem] overflow-hidden shadow-2xl">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm border-collapse min-w-[800px]">
+            <thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white">
+              <tr>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Test Module</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Session Details</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px]">Registry Date</th>
+                <th className="p-6 font-black uppercase tracking-widest text-[10px] text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/20">
+              {data.registrations.filter((r:any) => r.user_id === student.user_id).map((reg:any) => {
+                const test = data.tests.find((t:any) => t.test_id === reg.test_id);
+                const hasResult = data.results.some((res: any) => res.user_id === student.user_id && res.test_id === reg.test_id);
+                return (
+                  <tr key={reg.reg_id} className="hover:bg-white/40 transition-colors group">
+                    <td className="p-6">
+                      <p className="font-black text-[#6c3baa]">{reg.module_type}</p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">Reg ID: {reg.reg_id}</p>
+                    </td>
+                    <td className="p-6">
+                      {test ? (
+                        <div className="flex flex-col">
+                          <span className="font-black text-slate-900">{formatDate(test.test_date)} ({test.test_day})</span>
+                          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">{test.test_time} • {test.room_number}</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col">
+                           <span className="text-slate-400 italic">Archived Exam Data</span>
+                           <span className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">Session ID: {reg.test_id}</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-6 font-bold text-slate-500">{formatDate(reg.registration_date)}</td>
+                    <td className="p-6 text-right">
+                      {hasResult ? <Badge color="brand">Result Published</Badge> : <Badge color="green">Confirmed</Badge>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const StudentResults = ({ student, data }: any) => {
+  if (!student) return null;
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <h2 className="text-4xl font-black text-slate-900 leading-tight">Performance History</h2>
+      <div className="grid grid-cols-1 gap-8">
+        {data.results.filter((r:any) => r.user_id === student.user_id).map((res:any) => {
+          // We search the full tests list including soft-deleted ones
+          const test = data.tests.find((t:any) => t.test_id === res.test_id);
+          const isMock = test?.test_type === TestType.MOCK || (!test && res.overall_score !== 0 && res.overall_score !== undefined);
+
+          const scoresToDisplay = [
+            { label: 'LISTENING', score: res.listening_score, type: TestType.LISTENING },
+            { label: 'READING', score: res.reading_score, type: TestType.READING },
+            { label: 'WRITING', score: res.writing_score, type: TestType.WRITING },
+            { label: 'SPEAKING', score: res.speaking_score, type: TestType.SPEAKING }
+          ].filter(s => isMock || (test && s.type === test.test_type));
+          
+          return (
+            <Card key={res.result_id} className="group hover:border-[#6c3baa] flex flex-col md:flex-row gap-10 items-stretch">
+              <div className="flex-1 flex flex-col justify-center">
+                <div className="mb-6">
+                   <Badge color="brand">{test?.test_type || 'Archived Result'}</Badge>
+                   <h3 className="text-3xl font-black text-slate-900 mt-2">{test?.test_type === TestType.MOCK || isMock ? 'Assessment Record' : `${test?.test_type} Examination`}</h3>
+                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest mt-1">Ref ID: {res.test_id}</p>
+                </div>
+                
+                <div className={`grid gap-6 bg-white/20 p-6 rounded-[2rem] border border-white/40 ${isMock ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 max-w-[200px]'}`}>
+                  {scoresToDisplay.map((s, idx) => (
+                    <div key={idx} className="text-center">
+                      <p className="text-[9px] font-black text-slate-400 uppercase mb-1">{s.label}</p>
+                      <p className="text-2xl font-black text-[#6c3baa]">{s.score !== undefined ? s.score : '--'}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="w-full md:w-80 flex flex-col gap-6 justify-center">
+                <div className="bg-white/40 border border-white/60 p-6 rounded-[2rem]">
+                   <p className="text-[9px] font-black text-slate-400 uppercase mb-3">Examination Audit</p>
+                   <div className="space-y-3">
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Date:</span><span className="text-xs font-black text-slate-900">{formatDate(test?.test_date || res.published_date)}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Day:</span><span className="text-xs font-black text-slate-900">{test?.test_day || '--'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Time:</span><span className="text-xs font-black text-slate-900">{test?.test_time || '--'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Room:</span><span className="text-xs font-black text-slate-900">{test?.room_number || '--'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Status:</span><span className="text-xs font-black text-emerald-600 uppercase">Validated</span></div>
+                   </div>
+                </div>
+
+                {isMock && (
+                  <div className="bg-[#6c3baa] p-8 rounded-[2.5rem] text-white shadow-xl shadow-purple-200 text-center flex flex-col justify-center transform group-hover:scale-105 transition-transform">
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-1">FINAL BAND</p>
+                    <p className="text-6xl font-black">{res.overall_score ? res.overall_score.toFixed(1) : '0.0'}</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          )})}
+        {data.results.filter((r:any) => r.user_id === student.user_id).length === 0 && (
+          <div className="p-20 text-center text-slate-400 font-black italic bg-white/20 backdrop-blur-3xl rounded-[3rem] border-2 border-dashed border-white/60">No academic results available for review.</div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const SearchableSelect = ({ label, placeholder, options, value, onChange, formatOption }: any) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+  const filtered = options.filter((opt: any) => JSON.stringify(opt).toLowerCase().includes(search.toLowerCase()));
+  const selectedOption = options.find((opt: any) => opt.id === value);
+  return (
+    <div className="space-y-1.5 relative" ref={wrapperRef}>
+      <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">{label}</label>
+      <div onClick={() => setIsOpen(!isOpen)} className={`w-full px-5 py-4 border-2 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md cursor-pointer transition-all ${isOpen ? 'border-[#6c3baa] ring-4 ring-purple-50' : 'border-slate-100/50 hover:border-slate-200'}`}>
+        {selectedOption ? formatOption(selectedOption) : <span className="text-slate-400">{placeholder}</span>}
+      </div>
+      {isOpen && (
+        <div className="absolute z-[100] top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden">
+          <div className="p-3 border-b border-slate-50 bg-slate-50/50">
+            <input autoFocus type="text" placeholder="Filter..." value={search} onChange={e => setSearch(e.target.value)} className="w-full p-3 bg-white border border-slate-200 rounded-xl outline-none focus:border-[#6c3baa] font-medium text-sm" onClick={e => e.stopPropagation()} />
+          </div>
+          <div className="max-h-60 overflow-y-auto">
+            {filtered.length > 0 ? filtered.map((opt: any) => (
+              <div key={opt.id} onClick={() => { onChange(opt.id); setIsOpen(false); setSearch(''); }} className="p-4 hover:bg-purple-50 cursor-pointer border-b border-slate-50 last:border-0 group transition-colors">
+                {formatOption(opt, true)}
+              </div>
+            )) : <div className="p-8 text-center text-xs font-bold text-slate-400">No matching entries found.</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isReadOnly }: any) => {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingResultId, setEditingResultId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [form, setForm] = useState({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 });
+  
+  const selectedSession = data.tests.find((t: any) => t.test_id === form.test_id);
+  const isMock = selectedSession?.test_type === TestType.MOCK;
+  
+  useEffect(() => {
+    if (isMock) { 
+      if (!form.l || !form.r || !form.w || !form.s) setForm(f => ({ ...f, overall: 0 }));
+      else setForm(f => ({ ...f, overall: calculateIELTSBand(form.l, form.r, form.w, form.s) })); 
+    } else setForm(f => ({ ...f, overall: 0 }));
+  }, [form.l, form.r, form.w, form.s, isMock, selectedSession]);
+  
+  const filteredResults = data.results.filter((r: Result) => {
+    const s = data.students.find(x => x.user_id === r.user_id);
+    return s?.name.toLowerCase().includes(search.toLowerCase()) || r.user_id.toLowerCase().includes(search.toLowerCase());
+  });
+
+  const sessionOptions = data.tests.filter(t => !t.is_deleted).map((t: TestSchedule) => ({ 
+    id: t.test_id, 
+    type: t.test_type, 
+    date: t.test_date, 
+    time: t.test_time,
+    day: t.test_day
+  }));
+
+  const studentOptions = useMemo(() => {
+    if (!form.test_id) return [];
+    
+    const registeredIds = data.registrations
+      .filter(reg => reg.test_id === form.test_id)
+      .map(reg => reg.user_id);
+      
+    const resultIds = data.results
+      .filter(res => res.test_id === form.test_id && res.result_id !== editingResultId)
+      .map(res => res.user_id);
+
+    return data.students
+      .filter(s => registeredIds.includes(s.user_id) && !resultIds.includes(s.user_id))
+      .map(s => ({ id: s.user_id, name: s.name, batch: s.batch_number, avatar: s.avatar_url }));
+  }, [data.students, data.registrations, data.results, form.test_id, editingResultId]);
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const resultPayload: any = {
+      user_id: form.user_id,
+      test_id: form.test_id,
+      listening_score: form.l,
+      reading_score: form.r,
+      writing_score: form.w,
+      speaking_score: form.s,
+      overall_score: form.overall
+    };
+
+    if (editingResultId) onUpdateResult({ ...resultPayload, result_id: editingResultId });
+    else onAddResult(resultPayload);
+
+    setShowAdd(false);
+    setEditingResultId(null);
+    setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 });
+  };
+
+  const startEditResult = (r: Result) => {
+    setEditingResultId(r.result_id);
+    setForm({
+      user_id: r.user_id,
+      test_id: r.test_id,
+      l: r.listening_score || 0,
+      r: r.reading_score || 0,
+      w: r.writing_score || 0,
+      s: r.speaking_score || 0,
+      overall: r.overall_score || 0
+    });
+    setShowAdd(true);
+  };
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <h2 className="text-4xl font-black text-slate-900 leading-tight">Academic Scoring</h2>
+        <div className="flex flex-col sm:flex-row items-center justify-end w-full md:w-auto gap-4">
+          <SearchInput value={search} onChange={setSearch} placeholder="Filter outcomes..." />
+          {!isReadOnly && <Button onClick={() => { setEditingResultId(null); setShowAdd(true); setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 }); }} variant="primary" className="px-8 whitespace-nowrap">+ Post Result</Button>}
+        </div>
+      </div>
+      
+      {!isReadOnly && showAdd && (
+        <div className="relative z-30">
+          <Card title={editingResultId ? "Modify Academic Record" : "Post New Academic Outcome"}>
+            <form onSubmit={handleFormSubmit} className="space-y-10">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <SearchableSelect 
+                  label="Examination Mapping"
+                  placeholder="Link to session audit..."
+                  options={sessionOptions}
+                  value={form.test_id}
+                  onChange={(id: string) => setForm({...form, test_id: id, user_id: ''})}
+                  formatOption={(opt: any) => (
+                    <div className="flex flex-col">
+                      <span className="font-black text-[#6c3baa] leading-none">
+                        {opt.type} Examination
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-bold uppercase mt-1">
+                        {opt.day}, {formatDate(opt.date)} @ {opt.time}
+                      </span>
+                    </div>
+                  )}
+                />
+                <SearchableSelect 
+                  label="Candidate Identity"
+                  placeholder={form.test_id ? "Find candidate handle..." : "Select examination first..."}
+                  options={studentOptions}
+                  value={form.user_id}
+                  onChange={(id: string) => setForm({...form, user_id: id})}
+                  formatOption={(opt: any) => (
+                    <div className="flex items-center gap-3">
+                      <UserAvatar role={UserRole.STUDENT} id={opt.id} name={opt.name} className="w-10 h-10 rounded-lg" />
+                      <div>
+                        <span className="font-black text-slate-900 block leading-none">{opt.name}</span>
+                        <span className="text-[10px] text-slate-400 font-bold uppercase">ID: {opt.id} • Batch: {opt.batch}</span>
+                      </div>
+                    </div>
+                  )}
+                />
+              </div>
+
+              {form.test_id && (
+                <div className="bg-[#6c3baa]/90 backdrop-blur-xl p-10 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden border border-white/20">
+                  <div className="relative z-10 grid grid-cols-2 md:grid-cols-4 gap-6 mb-10">
+                    {(isMock || selectedSession?.test_type === TestType.LISTENING) && <div className="text-center space-y-2"><label className="text-[10px] font-black text-purple-200 uppercase">Listening</label><input type="number" step="0.5" value={form.l} className="w-full border-2 border-white/20 rounded-2xl p-4 text-center font-black text-white bg-white/10 backdrop-blur-md text-2xl focus:bg-white/20 outline-none" onChange={e => setForm({...form, l: parseFloat(e.target.value) || 0})} /></div>}
+                    {(isMock || selectedSession?.test_type === TestType.READING) && <div className="text-center space-y-2"><label className="text-[10px] font-black text-purple-200 uppercase">Reading</label><input type="number" step="0.5" value={form.r} className="w-full border-2 border-white/20 rounded-2xl p-4 text-center font-black text-white bg-white/10 backdrop-blur-md text-2xl focus:bg-white/20 outline-none" onChange={e => setForm({...form, r: parseFloat(e.target.value) || 0})} /></div>}
+                    {(isMock || selectedSession?.test_type === TestType.WRITING) && <div className="text-center space-y-2"><label className="text-[10px] font-black text-purple-200 uppercase">Writing</label><input type="number" step="0.5" value={form.w} className="w-full border-2 border-white/20 rounded-2xl p-4 text-center font-black text-white bg-white/10 backdrop-blur-md text-2xl focus:bg-white/20 outline-none" onChange={e => setForm({...form, w: parseFloat(e.target.value) || 0})} /></div>}
+                    {(isMock || selectedSession?.test_type === TestType.SPEAKING) && <div className="text-center space-y-2"><label className="text-[10px] font-black text-purple-200 uppercase">Speaking</label><input type="number" step="0.5" value={form.s} className="w-full border-2 border-white/20 rounded-2xl p-4 text-center font-black text-white bg-white/10 backdrop-blur-md text-2xl focus:bg-white/20 outline-none" onChange={e => setForm({...form, s: parseFloat(e.target.value) || 0})} /></div>}
+                  </div>
+                  {isMock && <div className="relative z-10 border-t border-white/20 pt-10 text-center"><p className="text-[10px] font-black text-purple-200 uppercase tracking-[0.2em] mb-2">VALIDATED BAND</p><p className="text-7xl font-black">{form.overall.toFixed(1)}</p></div>}
+                </div>
+              )}
+              <div className="flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => { setShowAdd(false); setEditingResultId(null); }}>Cancel</Button><Button variant="primary" type="submit" disabled={!form.test_id || !form.user_id}>Validate & Post Outcome</Button></div>
+            </form>
+          </Card>
+        </div>
+      )}
+
+      <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl relative z-10">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm border-collapse min-w-[650px]">
+            <thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white">
+              <tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Candidate Handle</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Score Vector</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Outcome</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr>
+            </thead>
+            <tbody className="divide-y divide-white/20">
+              {filteredResults.map((r:any) => {
+                const s = data.students.find(x => x.user_id === r.user_id);
+                const t = data.tests.find(x => x.test_id === r.test_id);
+                const isMockResult = t?.test_type === TestType.MOCK || (!t && r.overall_score > 0);
+                return (
+                  <tr key={r.result_id} className="hover:bg-white/40 transition-colors">
+                    <td className="p-6">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden">
+                           <UserAvatar role={UserRole.STUDENT} id={r.user_id} name={s?.name} className="w-full h-full" />
+                        </div>
+                        <div>
+                          <span className="font-black text-slate-900 block">{s?.name || 'Candidate Record'}</span>
+                          <span className="text-[9px] font-bold text-slate-400 uppercase">{r.user_id}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-6 font-black text-slate-500 font-mono text-xs">L:{r.listening_score || 0} R:{r.reading_score || 0} W:{r.writing_score || 0} S:{r.speaking_score || 0}</td>
+                    <td className="p-6">
+                      {isMockResult ? <span className="text-2xl font-black text-[#6c3baa]">{r.overall_score?.toFixed(1) || '0.0'}</span> : <Badge color="slate">MODULE DATA</Badge>}
+                    </td>
+                    <td className="p-6 text-right space-x-3 whitespace-nowrap">
+                      {!isReadOnly && <button onClick={() => startEditResult(r)} className="text-[#6c3baa] font-black text-xs hover:underline uppercase tracking-widest">Edit</button>}
+                      {!isReadOnly && <button onClick={() => { if(confirm('Permanently delete record?')) onDeleteResult(r.result_id); }} className="text-red-400 font-black text-xs hover:text-red-600 uppercase tracking-widest hover:underline">Revoke</button>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const StaffManager = ({ admins, onAdd, onDelete, isReadOnly }: { admins: Admin[], onAdd: (a: any) => void, onDelete: (id: string) => void, isReadOnly: boolean }) => {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ username: '', password: '', role: UserRole.MODERATOR });
+  const [deleteAdminID, setDeleteAdminID] = useState<string | null>(null);
+
+  const confirmDeleteAdmin = () => {
+    if (deleteAdminID) {
+      onDelete(deleteAdminID);
+      setDeleteAdminID(null);
+    }
+  };
+
+  return (
+    <div className="space-y-10 animate-in fade-in duration-500">
+      <div className="flex justify-between items-center">
+        <h2 className="text-4xl font-black text-slate-900">Access Management</h2>
+        {!isReadOnly && <Button onClick={() => setShowAdd(true)} variant="primary" className="px-8 whitespace-nowrap">+ Grant Access</Button>}
+      </div>
+
+      <ConfirmationModal 
+        isOpen={!!deleteAdminID}
+        title="Revoke Access"
+        message="Are you sure you want to permanently remove this administrator? This will revoke all their system privileges and remove their handle from the database."
+        confirmText="Confirm Remove"
+        onCancel={() => setDeleteAdminID(null)}
+        onConfirm={confirmDeleteAdmin}
+      />
+
+      {!isReadOnly && showAdd && (
+        <Card title="Register Management Handle">
+          <form onSubmit={(e) => { e.preventDefault(); onAdd(form); setShowAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md" /></div>
+            <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div>
+            <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Privilege Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div>
+            <div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => setShowAdd(false)}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div>
+          </form>
+        </Card>
+      )}
+      <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm border-collapse min-w-[500px]">
+            <thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white">
+              <tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Handle Mapping</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Access Layer</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr>
+            </thead>
+            <tbody className="divide-y divide-white/20">
+              {admins.map(a => (
+                <tr key={a.admin_id} className="hover:bg-white/40 transition-colors">
+                  <td className="p-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden">
+                        <UserAvatar role={a.role} id={a.admin_id} name={a.username} className="w-full h-full" />
+                      </div>
+                      <span className="font-black text-slate-900">{a.username}</span>
+                    </div>
+                  </td>
+                  <td className="p-6"><Badge color="brand">{a.role.replace('_', ' ')}</Badge></td>
+                  <td className="p-6 text-right">
+                    {!isReadOnly && a.username !== 'HA.admin01' && (
+                      <button onClick={() => setDeleteAdminID(a.admin_id)} className="text-red-400 font-black text-xs hover:text-red-600 uppercase tracking-widest">Revoke Access</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const NavLink: React.FC<{ to: string; children: React.ReactNode; onClick?: () => void }> = ({ to, children, onClick }) => {
+  const { pathname } = useLocation();
+  const isActive = pathname === to || (pathname === "" && to === "/");
+  return (
+    <Link 
+      to={to} 
+      onClick={onClick}
+      className={`flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-black transition-all ${isActive ? 'bg-purple-100/50 text-[#6c3baa] shadow-inner backdrop-blur-[40px] border border-white/20' : 'text-slate-500 hover:text-[#6c3baa] hover:bg-white/10'}`}
+    >
+      {children}
+    </Link>
   );
 };
 
