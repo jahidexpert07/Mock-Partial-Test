@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { HashRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -7,7 +8,6 @@ import {
 import { INITIAL_ADMINS, MOCK_TESTS } from './constants';
 
 const STORAGE_KEY = 'ielts_system_supabase_v1';
-const BRAND_BLUE = '#38b6ff';
 
 // --- SUPABASE CONFIGURATION ---
 const SUPABASE_URL = 'https://cirfftfeoegwzipfpyiq.supabase.co';
@@ -1036,7 +1036,7 @@ const App = () => {
 
         <main className="flex-1 p-6 md:p-12 overflow-y-auto max-h-screen">
           <Routes>
-            <Route path="/" element={userRole === UserRole.STUDENT ? <StudentDashboard student={currentStudent!} data={appData} /> : <AdminDashboard data={appData} />} />
+            <Route path="/" element={userRole === UserRole.STUDENT ? <StudentDashboard student={currentStudent} data={appData} /> : <AdminDashboard data={appData} />} />
             <Route path="/students" element={<StudentManager students={appData.students} 
                 currentAdmin={currentAdmin} userRole={userRole} data={appData}
                 onAdd={async (s:any) => {
