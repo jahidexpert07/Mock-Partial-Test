@@ -1,0 +1,5 @@
+{
+  "name": "Mock & Partial Test",
+  "description": "A comprehensive IELTS test registration and management system featuring student and multi-role admin portals with test scheduling, result tracking, and registration management.",
+  "requestFramePermissions": []
+}
