@@ -129,9 +129,8 @@ const SupabaseAPI = {
   },
 
   async deleteTest(testId: string) {
-    // Instead of actual deletion, we update a soft-delete flag
-    // This ensures results linked to this test still show session details to the student
-    return supabase.from('tests').update({ is_deleted: true }).eq('test_id', testId);
+    // Direct deletion to ensure it does not reappear on refresh
+    return supabase.from('tests').delete().eq('test_id', testId);
   },
 
   async deleteStudent(userId: string) {
@@ -585,11 +584,11 @@ const App = () => {
                 }}
                 onUpdate={(t: TestSchedule) => setAppData(p => ({ ...p, tests: p.tests.map(x => x.test_id === t.test_id ? t : x) }))}
                 onDelete={async (id:string) => {
-                  // Perform soft delete in state to hide it from scheduling views
-                  // while maintaining accessibility for score lookups
+                  // Changed to hard delete to ensure the session is removed from the array 
+                  // and does not reappear after refresh due to the upsert sync logic.
                   setAppData(p => ({ 
                     ...p, 
-                    tests: p.tests.map(t => t.test_id === id ? { ...t, is_deleted: true } : t)
+                    tests: p.tests.filter(t => t.test_id !== id)
                   }));
                   await SupabaseAPI.deleteTest(id);
                 }}
