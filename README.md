@@ -1,3 +1,4 @@
+
 # HA Mock & Partial Test Registration System
 
 A modern, glassmorphic IELTS test management portal connected to Supabase.
@@ -45,14 +46,15 @@ CREATE TABLE IF NOT EXISTS tests (
   max_capacity INT DEFAULT 30,
   current_registrations INT DEFAULT 0,
   created_by TEXT,
-  is_closed BOOLEAN DEFAULT FALSE
+  is_closed BOOLEAN DEFAULT FALSE,
+  is_deleted BOOLEAN DEFAULT FALSE
 );
 
 -- 4. Registrations Table
 CREATE TABLE IF NOT EXISTS registrations (
   reg_id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES students(user_id) ON DELETE CASCADE,
-  test_id TEXT REFERENCES tests(test_id) ON DELETE CASCADE,
+  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL,
   module_type TEXT,
   registration_date DATE,
   status TEXT
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS registrations (
 CREATE TABLE IF NOT EXISTS results (
   result_id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES students(user_id) ON DELETE CASCADE,
-  test_id TEXT REFERENCES tests(test_id) ON DELETE CASCADE,
+  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL,
   listening_score FLOAT,
   reading_score FLOAT,
   writing_score FLOAT,
@@ -102,5 +104,6 @@ ON CONFLICT (admin_id) DO NOTHING;
 
 ## 🛠 Features
 - **Supabase Integration**: Real-time database syncing.
-- **Auto-Purge**: Student data and all associated activities are deleted exactly 1 year after registration to save database space.
+- **Score Persistence**: Even if an admin removes a session from the schedule, student results remain safely stored in their profiles.
+- **Soft Delete**: Sessions are hidden rather than purged to maintain historical accuracy.
 - **Multi-Role**: Admin, Co-Admin, Moderator, Viewer, and Student portals.

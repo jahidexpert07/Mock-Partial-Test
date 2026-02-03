@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { HashRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -129,8 +130,7 @@ const SupabaseAPI = {
   },
 
   async deleteTest(testId: string) {
-    // Direct deletion to ensure it does not reappear on refresh
-    return supabase.from('tests').delete().eq('test_id', testId);
+    return supabase.from('tests').update({ is_deleted: true }).eq('test_id', testId);
   },
 
   async deleteStudent(userId: string) {
@@ -451,7 +451,6 @@ const App = () => {
     return <LoginPage data={appData} onLogin={(id, role) => { 
         setLoggedID(id); 
         setUserRole(role); 
-        // Force direct jump to dashboard route on login
         window.location.hash = '#/';
     }} />;
   }
@@ -584,11 +583,9 @@ const App = () => {
                 }}
                 onUpdate={(t: TestSchedule) => setAppData(p => ({ ...p, tests: p.tests.map(x => x.test_id === t.test_id ? t : x) }))}
                 onDelete={async (id:string) => {
-                  // Changed to hard delete to ensure the session is removed from the array 
-                  // and does not reappear after refresh due to the upsert sync logic.
                   setAppData(p => ({ 
                     ...p, 
-                    tests: p.tests.filter(t => t.test_id !== id)
+                    tests: p.tests.map(t => t.test_id === id ? { ...t, is_deleted: true } : t)
                   }));
                   await SupabaseAPI.deleteTest(id);
                 }}
@@ -699,6 +696,10 @@ const AdminDashboard = ({ data }: { data: AppState }) => {
     return data.students.filter(s => new Date(s.expiry_date) >= today).length;
   }, [data.students]);
 
+  const activeTestsCount = useMemo(() => {
+    return data.tests.filter(t => !t.is_deleted).length;
+  }, [data.tests]);
+
   const recentActivity = useMemo(() => {
     const activities: any[] = [];
     data.students.slice(-5).forEach(s => activities.push({ id: `s-${s.user_id}`, type: 'Candidate Registered', label: s.name, time: s.created_at, icon: '👤' }));
@@ -752,7 +753,7 @@ const AdminDashboard = ({ data }: { data: AppState }) => {
         {[
           { label: 'Total Base', value: data.students.length, color: '#6c3baa' },
           { label: 'Live Active', value: activeStudentsCount, color: BRAND_BLUE },
-          { label: 'Sessions', value: data.tests.length, color: '#6c3baa' },
+          { label: 'Sessions', value: activeTestsCount, color: '#6c3baa' },
           { label: 'System Staff', value: data.admins.length, color: '#6c3baa' },
         ].map(s => (
           <Card key={s.label} className="group relative overflow-hidden transition-all hover:-translate-y-1">
@@ -866,7 +867,7 @@ const ReportsView = ({ data }: { data: AppState }) => {
   );
 };
 
-const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, currentAdmin }: any) => {
+const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, currentAdmin, data }: any) => {
   const [showAdd, setShowAdd] = useState(false);
   const [viewStudent, setViewStudent] = useState<Student | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -876,6 +877,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmError, setConfirmError] = useState('');
   const [deleteCandidateID, setDeleteCandidateID] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'profile' | 'bookings' | 'scores' | 'progress'>('profile');
 
   const [form, setForm] = useState({ 
     user_id: '', name: '', phone: '', gender: Gender.MALE, batch_number: '', 
@@ -893,6 +895,16 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
         s.batch_number.toLowerCase().includes(search.toLowerCase())
       );
   }, [students, search]);
+
+  const studentBookings = useMemo(() => {
+    if (!viewStudent) return [];
+    return data.registrations.filter((r: Registration) => r.user_id === viewStudent.user_id);
+  }, [viewStudent, data.registrations]);
+
+  const studentResults = useMemo(() => {
+    if (!viewStudent) return [];
+    return data.results.filter((r: Result) => r.user_id === viewStudent.user_id);
+  }, [viewStudent, data.results]);
 
   const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -938,6 +950,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
     setViewStudent(s);
     setEditForm({ ...s });
     setIsEditing(false);
+    setActiveTab('profile');
   };
 
   const confirmDeleteStudent = () => {
@@ -1025,43 +1038,187 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                   )}
                 </div>
               </div>
-              <div className="p-10 space-y-10">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                   <div className="space-y-6">
-                      <p className="text-sm font-black text-slate-900 uppercase tracking-widest border-b pb-2">Profile Information</p>
-                      {isEditing ? (
-                        <div className="space-y-5">
-                          <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Phone Number</label><input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
-                          <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Batch Number</label><input value={editForm.batch_number} onChange={e => setEditForm({...editForm, batch_number: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
-                          <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Validity Expiry</label><input type="date" value={editForm.expiry_date} onChange={e => setEditForm({...editForm, expiry_date: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-2 gap-6">
-                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Phone</p><p className="font-black text-slate-700">{viewStudent.phone}</p></div>
-                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Batch</p><p className="font-black text-slate-700">{viewStudent.batch_number}</p></div>
-                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Account Expiry</p><p className="font-black text-slate-700">{formatDate(viewStudent.expiry_date)}</p></div>
-                          <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Status</p>{new Date(viewStudent.expiry_date) < new Date() ? <Badge color="red">EXPIRED</Badge> : <Badge color="green">ACTIVE</Badge>}</div>
-                        </div>
-                      )}
-                   </div>
-                   <div className="bg-white/20 p-8 rounded-[2rem] border border-white/40 backdrop-blur-md">
-                      <p className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6">Module Balances</p>
-                      <div className="grid grid-cols-2 gap-4">
-                        {Object.entries(editForm?.remaining_tests || viewStudent.remaining_tests).map(([key, val]) => (
-                          <div key={key} className="text-center bg-white/40 p-4 rounded-2xl shadow-sm border border-white/40">
-                            <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">{key}</label>
-                            {isEditing ? (
-                              <input type="number" value={val as number} onChange={e => setEditForm({ ...editForm, remaining_tests: { ...editForm.remaining_tests, [key]: parseInt(e.target.value) || 0 } })} className="w-full text-center font-black text-[#6c3baa] bg-white/60 rounded-xl outline-none py-1" />
-                            ) : (
-                              <div className="font-black text-slate-900 text-2xl">{val as number}</div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                   </div>
-                </div>
 
-                <div className="flex flex-col sm:flex-row justify-between items-center gap-6 border-t border-white/20 pt-8">
+              <div className="px-10 pt-6">
+                <div className="flex border-b border-white/20 gap-8">
+                  {[
+                    { id: 'profile', label: 'Profile & Balances' },
+                    { id: 'bookings', label: 'Booking History' },
+                    { id: 'scores', label: 'Academic Scores' },
+                    { id: 'progress', label: 'Progress Pulse' }
+                  ].map(tab => (
+                    <button 
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`pb-4 text-xs font-black uppercase tracking-widest transition-all relative ${activeTab === tab.id ? 'text-[#6c3baa]' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      {tab.label}
+                      {activeTab === tab.id && <div className="absolute bottom-0 left-0 right-0 h-1 bg-[#6c3baa] rounded-full"></div>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-10">
+                {activeTab === 'profile' && (
+                  <div className="space-y-10 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+                       <div className="space-y-6">
+                          <p className="text-sm font-black text-slate-900 uppercase tracking-widest border-b pb-2">Profile Information</p>
+                          {isEditing ? (
+                            <div className="space-y-5">
+                              <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Phone Number</label><input value={editForm.phone} onChange={e => setEditForm({...editForm, phone: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
+                              <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Batch Number</label><input value={editForm.batch_number} onChange={e => setEditForm({...editForm, batch_number: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
+                              <div className="space-y-1"><label className="text-[10px] font-black text-slate-400 uppercase ml-1">Validity Expiry</label><input type="date" value={editForm.expiry_date} onChange={e => setEditForm({...editForm, expiry_date: e.target.value})} className="w-full p-4 bg-white/40 border rounded-2xl font-bold focus:ring-2 focus:ring-purple-200 outline-none" /></div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-6">
+                              <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Phone</p><p className="font-black text-slate-700">{viewStudent.phone}</p></div>
+                              <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Batch</p><p className="font-black text-slate-700">{viewStudent.batch_number}</p></div>
+                              <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Account Expiry</p><p className="font-black text-slate-700">{formatDate(viewStudent.expiry_date)}</p></div>
+                              <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Status</p>{new Date(viewStudent.expiry_date) < new Date() ? <Badge color="red">EXPIRED</Badge> : <Badge color="green">ACTIVE</Badge>}</div>
+                            </div>
+                          )}
+                       </div>
+                       <div className="bg-white/20 p-8 rounded-[2rem] border border-white/40 backdrop-blur-md">
+                          <p className="text-sm font-black text-slate-900 uppercase tracking-widest mb-6">Module Balances</p>
+                          <div className="grid grid-cols-2 gap-4">
+                            {Object.entries(editForm?.remaining_tests || viewStudent.remaining_tests).map(([key, val]) => (
+                              <div key={key} className="text-center bg-white/40 p-4 rounded-2xl shadow-sm border border-white/40">
+                                <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">{key}</label>
+                                {isEditing ? (
+                                  <input type="number" value={val as number} onChange={e => setEditForm({ ...editForm, remaining_tests: { ...editForm.remaining_tests, [key]: parseInt(e.target.value) || 0 } })} className="w-full text-center font-black text-[#6c3baa] bg-white/60 rounded-xl outline-none py-1" />
+                                ) : (
+                                  <div className="font-black text-slate-900 text-2xl">{val as number}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                       </div>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'bookings' && (
+                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="bg-white/20 rounded-3xl overflow-hidden border border-white/40 shadow-xl">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-[#6c3baa]/80 text-white font-black uppercase tracking-widest">
+                          <tr>
+                            <th className="p-4">Module</th>
+                            <th className="p-4">Scheduled Date</th>
+                            <th className="p-4">Location</th>
+                            <th className="p-4 text-right">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/20">
+                          {studentBookings.map((b: Registration) => {
+                            const test = data.tests.find((t: TestSchedule) => t.test_id === b.test_id);
+                            return (
+                              <tr key={b.reg_id} className="hover:bg-white/30 transition-colors">
+                                <td className="p-4 font-black text-slate-800">{b.module_type}</td>
+                                <td className="p-4">
+                                  <p className="font-bold text-slate-700">{test ? formatDate(test.test_date) : '--/--/----'}</p>
+                                  <p className="text-[10px] text-slate-400 uppercase">{test?.test_time || 'Archived'}</p>
+                                </td>
+                                <td className="p-4 font-bold text-slate-500">{test?.room_number || 'Room Deleted'}</td>
+                                <td className="p-4 text-right"><Badge color={b.status === RegistrationStatus.CONFIRMED ? 'green' : 'slate'}>{b.status}</Badge></td>
+                              </tr>
+                            );
+                          })}
+                          {studentBookings.length === 0 && (
+                            <tr><td colSpan={4} className="p-10 text-center text-slate-400 italic">No bookings found for this candidate.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'scores' && (
+                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="space-y-4">
+                      {studentResults.map((r: Result) => {
+                        const test = data.tests.find((t: TestSchedule) => t.test_id === r.test_id);
+                        return (
+                          <div key={r.result_id} className="bg-white/30 border border-white/40 p-6 rounded-3xl shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
+                            <div className="flex-1">
+                              <Badge color="brand">{test?.test_type || 'Archived Module'}</Badge>
+                              <p className="font-black text-slate-800 mt-2 text-lg">{test ? `${test.test_type} Examination` : 'Deleted Session'}</p>
+                              <div className="flex gap-4 mt-1">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase">{test ? formatDate(test.test_date) : '--/--/----'} • {test?.room_number || 'Historical Data'}</p>
+                                <p className="text-[10px] font-bold text-[#6c3baa] uppercase tracking-widest">Validated by {r.published_by}</p>
+                              </div>
+                            </div>
+                            <div className="flex gap-4 text-center">
+                              {[{l: 'L', v: r.listening_score}, {l: 'R', v: r.reading_score}, {l: 'W', v: r.writing_score}, {l: 'S', v: r.speaking_score}].map(score => (
+                                <div key={score.l} className="w-12 h-12 flex flex-col items-center justify-center bg-white/60 rounded-xl border border-white/80 shadow-inner">
+                                  <span className="text-[8px] font-black text-slate-400">{score.l}</span>
+                                  <span className="text-sm font-black text-[#6c3baa]">{score.v || '--'}</span>
+                                </div>
+                              ))}
+                              {r.overall_score && (
+                                <div className="w-12 h-12 flex flex-col items-center justify-center bg-[#6c3baa] rounded-xl text-white shadow-lg shadow-purple-200">
+                                  <span className="text-[8px] font-black opacity-60">BAND</span>
+                                  <span className="text-sm font-black">{r.overall_score.toFixed(1)}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {studentResults.length === 0 && (
+                        <div className="p-10 text-center text-slate-400 italic bg-white/10 rounded-3xl border-2 border-dashed border-white/20">No scores recorded yet.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'progress' && (
+                  <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <Card className="!bg-[#6c3baa]/5 !border-[#6c3baa]/10">
+                      <p className="text-sm font-black text-[#6c3baa] uppercase tracking-[0.2em] mb-6">Band Performance Trends</p>
+                      <div className="h-64 flex items-end justify-between gap-4 px-4 border-b-2 border-slate-200/50 relative">
+                        {studentResults.filter(r => r.overall_score).map((r, i) => {
+                          const score = r.overall_score || 0;
+                          const height = (score / 9) * 100;
+                          return (
+                            <div key={i} className="flex-1 flex flex-col items-center group relative h-full justify-end">
+                              <div 
+                                className="w-full max-w-[40px] rounded-t-xl bg-gradient-to-t from-[#6c3baa] to-[#B2A5FF] transition-all hover:scale-x-110 relative group-hover:shadow-2xl"
+                                style={{ height: `${height}%` }}
+                              >
+                                <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded font-black opacity-0 group-hover:opacity-100 transition-opacity">
+                                  {score.toFixed(1)}
+                                </div>
+                              </div>
+                              <p className="text-[8px] font-black text-slate-400 mt-4 uppercase rotate-45 origin-left whitespace-nowrap">Result #{i+1}</p>
+                            </div>
+                          );
+                        })}
+                        {studentResults.filter(r => r.overall_score).length === 0 && (
+                          <div className="absolute inset-0 flex items-center justify-center text-slate-400 font-bold italic">Insufficient mock data to visualize progress.</div>
+                        )}
+                      </div>
+                      <div className="mt-16 grid grid-cols-2 gap-6">
+                        <div className="p-4 bg-white/60 rounded-2xl border border-white/80">
+                          <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Average Band</p>
+                          <p className="text-2xl font-black text-slate-900">
+                            {studentResults.length > 0 
+                              ? (studentResults.reduce((acc, r) => acc + (r.overall_score || 0), 0) / studentResults.length).toFixed(1) 
+                              : '0.0'}
+                          </p>
+                        </div>
+                        <div className="p-4 bg-white/60 rounded-2xl border border-white/80">
+                          <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Tests Attempted</p>
+                          <p className="text-2xl font-black text-slate-900">{studentResults.length}</p>
+                        </div>
+                      </div>
+                    </Card>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-6 border-t border-white/20 pt-8 mt-10">
                   <div className="flex gap-4">
                     {!isReadOnly && (
                       isEditing ? (
@@ -1197,34 +1354,14 @@ const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data
 
   const downloadExcel = () => {
     if (!currentViewedTest || studentList.length === 0) return;
-    
     const headers = ["Name", "Batch number", "Module name", "Room number", "ID number", "Module date", "Module time", "Module day"];
-    
-    let tableHtml = '<html><head><meta charset="utf-8"></head><body><table border="1">';
-    
-    // Add Header Row
-    tableHtml += '<tr>';
-    headers.forEach(h => {
-      tableHtml += `<th style="background-color:#6c3baa; color:white; font-weight:bold;">${h}</th>`;
-    });
+    let tableHtml = '<html><head><meta charset="utf-8"></head><body><table border="1"><tr>';
+    headers.forEach(h => tableHtml += `<th style="background-color:#6c3baa; color:white; font-weight:bold;">${h}</th>`);
     tableHtml += '</tr>';
-
-    // Add Student Data Rows (Standard vertical format)
     studentList.forEach(s => {
-      tableHtml += '<tr>';
-      tableHtml += `<td>${s.name}</td>`;
-      tableHtml += `<td>${s.batch_number}</td>`;
-      tableHtml += `<td>${currentViewedTest.test_type}</td>`;
-      tableHtml += `<td>${currentViewedTest.room_number}</td>`;
-      tableHtml += `<td>${s.user_id}</td>`;
-      tableHtml += `<td>${formatDate(currentViewedTest.test_date)}</td>`;
-      tableHtml += `<td>${currentViewedTest.test_time}</td>`;
-      tableHtml += `<td>${currentViewedTest.test_day}</td>`;
-      tableHtml += '</tr>';
+      tableHtml += `<tr><td>${s.name}</td><td>${s.batch_number}</td><td>${currentViewedTest.test_type}</td><td>${currentViewedTest.room_number}</td><td>${s.user_id}</td><td>${formatDate(currentViewedTest.test_date)}</td><td>${currentViewedTest.test_time}</td><td>${currentViewedTest.test_day}</td></tr>`;
     });
-
     tableHtml += '</table></body></html>';
-
     const blob = new Blob([tableHtml], { type: 'application/vnd.ms-excel' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1256,7 +1393,7 @@ const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data
       <ConfirmationModal 
         isOpen={!!deleteSessionID}
         title="Delete Session"
-        message="Are you sure you want to delete this test session? It will be removed from the active schedule, but historical bookings and published results will remain visible in candidate profiles."
+        message="Are you sure you want to delete this test session? It will be hidden from the active schedule, but historical bookings and published results will remain visible in candidate profiles."
         confirmText="Confirm Delete"
         onCancel={() => setDeleteSessionID(null)}
         onConfirm={confirmDeleteSession}
@@ -1442,10 +1579,8 @@ const AvailableTests = ({ student, data, onRegister }: any) => {
                     {isManuallyClosed ? <Badge color="red">CLOSED</Badge> : isFull ? <Badge color="red">SESSION FULL</Badge> : <Badge color="sky">{seatsLeft} SEATS LEFT</Badge>}
                  </div>
               </div>
-              
               <p className="text-2xl font-black text-slate-900 mb-1">{t.test_type}</p>
               <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">{t.test_day} • {t.room_number}</p>
-              
               <div className="grid grid-cols-2 gap-4 mb-8">
                  <div className="bg-white/40 p-3 rounded-2xl border border-white/60">
                     <p className="text-[9px] font-black text-slate-400 uppercase mb-1">DATE</p>
@@ -1456,7 +1591,6 @@ const AvailableTests = ({ student, data, onRegister }: any) => {
                     <p className="font-black text-slate-700 text-sm">{t.test_time}</p>
                  </div>
               </div>
-
               {registered ? (
                 <div className="w-full py-4 rounded-2xl bg-emerald-100/50 backdrop-blur-md text-emerald-700 font-black text-center text-xs uppercase border border-emerald-200/50">RESERVATION CONFIRMED</div>
               ) : (
@@ -1500,17 +1634,12 @@ const RegistrationHistory = ({ student, data }: any) => {
                       <p className="text-[10px] font-bold text-slate-400 uppercase">Reg ID: {reg.reg_id}</p>
                     </td>
                     <td className="p-6">
-                      {test ? (
-                        <div className="flex flex-col">
-                          <span className="font-black text-slate-900">{formatDate(test.test_date)} ({test.test_day})</span>
-                          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">{test.test_time} • {test.room_number}</span>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col">
-                           <span className="text-slate-400 italic">Archived Exam Data</span>
-                           <span className="text-[10px] font-bold text-slate-400 uppercase mt-0.5">Session ID: {reg.test_id}</span>
-                        </div>
-                      )}
+                      <div className="flex flex-col">
+                        <span className="font-black text-slate-900">{test ? formatDate(test.test_date) : '--/--/----'} {test ? `(${test.test_day})` : ''}</span>
+                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
+                          {test?.test_time || 'Historical'} • {test?.room_number || 'Archived Location'}
+                        </span>
+                      </div>
                     </td>
                     <td className="p-6 font-bold text-slate-500">{formatDate(reg.registration_date)}</td>
                     <td className="p-6 text-right">
@@ -1534,10 +1663,8 @@ const StudentResults = ({ student, data }: any) => {
       <h2 className="text-4xl font-black text-slate-900 leading-tight">Performance History</h2>
       <div className="grid grid-cols-1 gap-8">
         {data.results.filter((r:any) => r.user_id === student.user_id).map((res:any) => {
-          // We search the full tests list including soft-deleted ones
           const test = data.tests.find((t:any) => t.test_id === res.test_id);
           const isMock = test?.test_type === TestType.MOCK || (!test && res.overall_score !== 0 && res.overall_score !== undefined);
-
           const scoresToDisplay = [
             { label: 'LISTENING', score: res.listening_score, type: TestType.LISTENING },
             { label: 'READING', score: res.reading_score, type: TestType.READING },
@@ -1549,11 +1676,10 @@ const StudentResults = ({ student, data }: any) => {
             <Card key={res.result_id} className="group hover:border-[#6c3baa] flex flex-col md:flex-row gap-10 items-stretch">
               <div className="flex-1 flex flex-col justify-center">
                 <div className="mb-6">
-                   <Badge color="brand">{test?.test_type || 'Archived Result'}</Badge>
-                   <h3 className="text-3xl font-black text-slate-900 mt-2">{test?.test_type === TestType.MOCK || isMock ? 'Assessment Record' : `${test?.test_type} Examination`}</h3>
+                   <Badge color="brand">{test?.test_type || 'Archived Module'}</Badge>
+                   <h3 className="text-3xl font-black text-slate-900 mt-2">{test?.test_type === TestType.MOCK || isMock ? 'Assessment Record' : `${test?.test_type || 'Deleted'} Examination`}</h3>
                    <p className="text-xs font-black text-slate-400 uppercase tracking-widest mt-1">Ref ID: {res.test_id}</p>
                 </div>
-                
                 <div className={`grid gap-6 bg-white/20 p-6 rounded-[2rem] border border-white/40 ${isMock ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 max-w-[200px]'}`}>
                   {scoresToDisplay.map((s, idx) => (
                     <div key={idx} className="text-center">
@@ -1563,19 +1689,17 @@ const StudentResults = ({ student, data }: any) => {
                   ))}
                 </div>
               </div>
-
               <div className="w-full md:w-80 flex flex-col gap-6 justify-center">
                 <div className="bg-white/40 border border-white/60 p-6 rounded-[2rem]">
                    <p className="text-[9px] font-black text-slate-400 uppercase mb-3">Examination Audit</p>
                    <div className="space-y-3">
-                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Date:</span><span className="text-xs font-black text-slate-900">{formatDate(test?.test_date || res.published_date)}</span></div>
-                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Day:</span><span className="text-xs font-black text-slate-900">{test?.test_day || '--'}</span></div>
-                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Time:</span><span className="text-xs font-black text-slate-900">{test?.test_time || '--'}</span></div>
-                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Room:</span><span className="text-xs font-black text-slate-900">{test?.room_number || '--'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Date:</span><span className="text-xs font-black text-slate-900">{test ? formatDate(test.test_date) : formatDate(res.published_date)}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Day:</span><span className="text-xs font-black text-slate-900">{test?.test_day || 'Archived'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Time:</span><span className="text-xs font-black text-slate-900">{test?.test_time || 'Archived'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Room:</span><span className="text-xs font-black text-slate-900">{test?.room_number || 'Historical'}</span></div>
                       <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Status:</span><span className="text-xs font-black text-emerald-600 uppercase">Validated</span></div>
                    </div>
                 </div>
-
                 {isMock && (
                   <div className="bg-[#6c3baa] p-8 rounded-[2.5rem] text-white shadow-xl shadow-purple-200 text-center flex flex-col justify-center transform group-hover:scale-105 transition-transform">
                     <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-1">FINAL BAND</p>
@@ -1661,18 +1785,9 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
 
   const studentOptions = useMemo(() => {
     if (!form.test_id) return [];
-    
-    const registeredIds = data.registrations
-      .filter(reg => reg.test_id === form.test_id)
-      .map(reg => reg.user_id);
-      
-    const resultIds = data.results
-      .filter(res => res.test_id === form.test_id && res.result_id !== editingResultId)
-      .map(res => res.user_id);
-
-    return data.students
-      .filter(s => registeredIds.includes(s.user_id) && !resultIds.includes(s.user_id))
-      .map(s => ({ id: s.user_id, name: s.name, batch: s.batch_number, avatar: s.avatar_url }));
+    const registeredIds = data.registrations.filter(reg => reg.test_id === form.test_id).map(reg => reg.user_id);
+    const resultIds = data.results.filter(res => res.test_id === form.test_id && res.result_id !== editingResultId).map(res => res.user_id);
+    return data.students.filter(s => registeredIds.includes(s.user_id) && !resultIds.includes(s.user_id)).map(s => ({ id: s.user_id, name: s.name, batch: s.batch_number, avatar: s.avatar_url }));
   }, [data.students, data.registrations, data.results, form.test_id, editingResultId]);
 
   const handleFormSubmit = (e: React.FormEvent) => {
@@ -1686,10 +1801,8 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
       speaking_score: form.s,
       overall_score: form.overall
     };
-
     if (editingResultId) onUpdateResult({ ...resultPayload, result_id: editingResultId });
     else onAddResult(resultPayload);
-
     setShowAdd(false);
     setEditingResultId(null);
     setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 });
@@ -1718,47 +1831,18 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
           {!isReadOnly && <Button onClick={() => { setEditingResultId(null); setShowAdd(true); setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 }); }} variant="primary" className="px-8 whitespace-nowrap">+ Post Result</Button>}
         </div>
       </div>
-      
       {!isReadOnly && showAdd && (
         <div className="relative z-30">
           <Card title={editingResultId ? "Modify Academic Record" : "Post New Academic Outcome"}>
             <form onSubmit={handleFormSubmit} className="space-y-10">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <SearchableSelect 
-                  label="Examination Mapping"
-                  placeholder="Link to session audit..."
-                  options={sessionOptions}
-                  value={form.test_id}
-                  onChange={(id: string) => setForm({...form, test_id: id, user_id: ''})}
-                  formatOption={(opt: any) => (
-                    <div className="flex flex-col">
-                      <span className="font-black text-[#6c3baa] leading-none">
-                        {opt.type} Examination
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-bold uppercase mt-1">
-                        {opt.day}, {formatDate(opt.date)} @ {opt.time}
-                      </span>
-                    </div>
-                  )}
-                />
-                <SearchableSelect 
-                  label="Candidate Identity"
-                  placeholder={form.test_id ? "Find candidate handle..." : "Select examination first..."}
-                  options={studentOptions}
-                  value={form.user_id}
-                  onChange={(id: string) => setForm({...form, user_id: id})}
-                  formatOption={(opt: any) => (
-                    <div className="flex items-center gap-3">
-                      <UserAvatar role={UserRole.STUDENT} id={opt.id} name={opt.name} className="w-10 h-10 rounded-lg" />
-                      <div>
-                        <span className="font-black text-slate-900 block leading-none">{opt.name}</span>
-                        <span className="text-[10px] text-slate-400 font-bold uppercase">ID: {opt.id} • Batch: {opt.batch}</span>
-                      </div>
-                    </div>
-                  )}
-                />
+                <SearchableSelect label="Examination Mapping" placeholder="Link to session audit..." options={sessionOptions} value={form.test_id} onChange={(id: string) => setForm({...form, test_id: id, user_id: ''})} formatOption={(opt: any) => (
+                    <div className="flex flex-col"><span className="font-black text-[#6c3baa] leading-none">{opt.type} Examination</span><span className="text-[10px] text-slate-400 font-bold uppercase mt-1">{opt.day}, {formatDate(opt.date)} @ {opt.time}</span></div>
+                  )} />
+                <SearchableSelect label="Candidate Identity" placeholder={form.test_id ? "Find candidate handle..." : "Select examination first..."} options={studentOptions} value={form.user_id} onChange={(id: string) => setForm({...form, user_id: id})} formatOption={(opt: any) => (
+                    <div className="flex items-center gap-3"><UserAvatar role={UserRole.STUDENT} id={opt.id} name={opt.name} className="w-10 h-10 rounded-lg" /><div><span className="font-black text-slate-900 block leading-none">{opt.name}</span><span className="text-[10px] text-slate-400 font-bold uppercase">ID: {opt.id} • Batch: {opt.batch}</span></div></div>
+                  )} />
               </div>
-
               {form.test_id && (
                 <div className="bg-[#6c3baa]/90 backdrop-blur-xl p-10 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden border border-white/20">
                   <div className="relative z-10 grid grid-cols-2 md:grid-cols-4 gap-6 mb-10">
@@ -1775,7 +1859,6 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
           </Card>
         </div>
       )}
-
       <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl relative z-10">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm border-collapse min-w-[650px]">
@@ -1791,19 +1874,12 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
                   <tr key={r.result_id} className="hover:bg-white/40 transition-colors">
                     <td className="p-6">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden">
-                           <UserAvatar role={UserRole.STUDENT} id={r.user_id} name={s?.name} className="w-full h-full" />
-                        </div>
-                        <div>
-                          <span className="font-black text-slate-900 block">{s?.name || 'Candidate Record'}</span>
-                          <span className="text-[9px] font-bold text-slate-400 uppercase">{r.user_id}</span>
-                        </div>
+                        <div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden"><UserAvatar role={UserRole.STUDENT} id={r.user_id} name={s?.name} className="w-full h-full" /></div>
+                        <div><span className="font-black text-slate-900 block">{s?.name || 'Candidate Record'}</span><span className="text-[9px] font-bold text-slate-400 uppercase">{r.user_id}</span></div>
                       </div>
                     </td>
                     <td className="p-6 font-black text-slate-500 font-mono text-xs">L:{r.listening_score || 0} R:{r.reading_score || 0} W:{r.writing_score || 0} S:{r.speaking_score || 0}</td>
-                    <td className="p-6">
-                      {isMockResult ? <span className="text-2xl font-black text-[#6c3baa]">{r.overall_score?.toFixed(1) || '0.0'}</span> : <Badge color="slate">MODULE DATA</Badge>}
-                    </td>
+                    <td className="p-6">{isMockResult ? <span className="text-2xl font-black text-[#6c3baa]">{r.overall_score?.toFixed(1) || '0.0'}</span> : <Badge color="slate">MODULE DATA</Badge>}</td>
                     <td className="p-6 text-right space-x-3 whitespace-nowrap">
                       {!isReadOnly && <button onClick={() => startEditResult(r)} className="text-[#6c3baa] font-black text-xs hover:underline uppercase tracking-widest">Edit</button>}
                       {!isReadOnly && <button onClick={() => { if(confirm('Permanently delete record?')) onDeleteResult(r.result_id); }} className="text-red-400 font-black text-xs hover:text-red-600 uppercase tracking-widest hover:underline">Revoke</button>}
@@ -1823,68 +1899,18 @@ const StaffManager = ({ admins, onAdd, onDelete, isReadOnly }: { admins: Admin[]
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ username: '', password: '', role: UserRole.MODERATOR });
   const [deleteAdminID, setDeleteAdminID] = useState<string | null>(null);
-
   const confirmDeleteAdmin = () => {
-    if (deleteAdminID) {
-      onDelete(deleteAdminID);
-      setDeleteAdminID(null);
-    }
+    if (deleteAdminID) { onDelete(deleteAdminID); setDeleteAdminID(null); }
   };
-
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
-      <div className="flex justify-between items-center">
-        <h2 className="text-4xl font-black text-slate-900">Access Management</h2>
-        {!isReadOnly && <Button onClick={() => setShowAdd(true)} variant="primary" className="px-8 whitespace-nowrap">+ Grant Access</Button>}
-      </div>
-
-      <ConfirmationModal 
-        isOpen={!!deleteAdminID}
-        title="Revoke Access"
-        message="Are you sure you want to permanently remove this administrator? This will revoke all their system privileges and remove their handle from the database."
-        confirmText="Confirm Remove"
-        onCancel={() => setDeleteAdminID(null)}
-        onConfirm={confirmDeleteAdmin}
-      />
-
+      <div className="flex justify-between items-center"><h2 className="text-4xl font-black text-slate-900">Access Management</h2>{!isReadOnly && <Button onClick={() => setShowAdd(true)} variant="primary" className="px-8 whitespace-nowrap">+ Grant Access</Button>}</div>
+      <ConfirmationModal isOpen={!!deleteAdminID} title="Revoke Access" message="Are you sure you want to permanently remove this administrator? This will revoke all their system privileges and remove their handle from the database." confirmText="Confirm Remove" onCancel={() => setDeleteAdminID(null)} onConfirm={confirmDeleteAdmin} />
       {!isReadOnly && showAdd && (
-        <Card title="Register Management Handle">
-          <form onSubmit={(e) => { e.preventDefault(); onAdd(form); setShowAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md" /></div>
-            <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div>
-            <div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Privilege Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div>
-            <div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => setShowAdd(false)}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div>
-          </form>
-        </Card>
+        <Card title="Register Management Handle"><form onSubmit={(e) => { e.preventDefault(); onAdd(form); setShowAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md" /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Privilege Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div><div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => { setShowAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div></form></Card>
       )}
       <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm border-collapse min-w-[500px]">
-            <thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white">
-              <tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Handle Mapping</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Access Layer</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr>
-            </thead>
-            <tbody className="divide-y divide-white/20">
-              {admins.map(a => (
-                <tr key={a.admin_id} className="hover:bg-white/40 transition-colors">
-                  <td className="p-6">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden">
-                        <UserAvatar role={a.role} id={a.admin_id} name={a.username} className="w-full h-full" />
-                      </div>
-                      <span className="font-black text-slate-900">{a.username}</span>
-                    </div>
-                  </td>
-                  <td className="p-6"><Badge color="brand">{a.role.replace('_', ' ')}</Badge></td>
-                  <td className="p-6 text-right">
-                    {!isReadOnly && a.username !== 'HA.admin01' && (
-                      <button onClick={() => setDeleteAdminID(a.admin_id)} className="text-red-400 font-black text-xs hover:text-red-600 uppercase tracking-widest">Revoke Access</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <div className="overflow-x-auto"><table className="w-full text-left text-sm border-collapse min-w-[500px]"><thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white"><tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Handle Mapping</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Access Layer</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr></thead><tbody className="divide-y divide-white/20">{admins.map(a => (<tr key={a.admin_id} className="hover:bg-white/40 transition-colors"><td className="p-6"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden"><UserAvatar role={a.role} id={a.admin_id} name={a.username} className="w-full h-full" /></div><span className="font-black text-slate-900">{a.username}</span></div></td><td className="p-6"><Badge color="brand">{a.role.replace('_', ' ')}</Badge></td><td className="p-6 text-right">{!isReadOnly && a.username !== 'HA.admin01' && (<button onClick={() => setDeleteAdminID(a.admin_id)} className="text-red-400 font-black text-xs hover:text-red-600 uppercase tracking-widest">Revoke Access</button>)}</td></tr>))}</tbody></table></div>
       </div>
     </div>
   );
@@ -1894,13 +1920,7 @@ const NavLink: React.FC<{ to: string; children: React.ReactNode; onClick?: () =>
   const { pathname } = useLocation();
   const isActive = pathname === to || (pathname === "" && to === "/");
   return (
-    <Link 
-      to={to} 
-      onClick={onClick}
-      className={`flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-black transition-all ${isActive ? 'bg-purple-100/50 text-[#6c3baa] shadow-inner backdrop-blur-[40px] border border-white/20' : 'text-slate-500 hover:text-[#6c3baa] hover:bg-white/10'}`}
-    >
-      {children}
-    </Link>
+    <Link to={to} onClick={onClick} className={`flex items-center gap-3 px-5 py-4 rounded-2xl text-sm font-black transition-all ${isActive ? 'bg-purple-100/50 text-[#6c3baa] shadow-inner backdrop-blur-[40px] border border-white/20' : 'text-slate-500 hover:text-[#6c3baa] hover:bg-white/10'}`}>{children}</Link>
   );
 };
 
