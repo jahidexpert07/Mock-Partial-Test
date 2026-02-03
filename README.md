@@ -6,10 +6,17 @@ A modern, glassmorphic IELTS test management portal connected to Supabase.
 ## 🚀 Setup Instructions
 
 ### 1. Database Setup (Supabase)
-Go to your [Supabase Dashboard](https://supabase.com), open the **SQL Editor**, and run the following script to create your tables:
+Go to your [Supabase Dashboard](https://supabase.com), open the **SQL Editor**, and run the following script to create your tables. This script includes soft-delete support and score persistence logic.
 
 ```sql
--- 1. Admins Table
+-- 1. CLEAN START (Optional: removes existing tables to ensure fresh schema)
+-- DROP TABLE IF EXISTS results;
+-- DROP TABLE IF EXISTS registrations;
+-- DROP TABLE IF EXISTS tests;
+-- DROP TABLE IF EXISTS students;
+-- DROP TABLE IF EXISTS admins;
+
+-- 2. Admins Table
 CREATE TABLE IF NOT EXISTS admins (
   admin_id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
@@ -19,7 +26,7 @@ CREATE TABLE IF NOT EXISTS admins (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Students Table
+-- 3. Students Table
 CREATE TABLE IF NOT EXISTS students (
   user_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -35,7 +42,7 @@ CREATE TABLE IF NOT EXISTS students (
   expiry_date DATE
 );
 
--- 3. Test Schedules Table
+-- 4. Test Schedules Table (Soft Delete Support)
 CREATE TABLE IF NOT EXISTS tests (
   test_id TEXT PRIMARY KEY,
   test_type TEXT NOT NULL,
@@ -47,24 +54,24 @@ CREATE TABLE IF NOT EXISTS tests (
   current_registrations INT DEFAULT 0,
   created_by TEXT,
   is_closed BOOLEAN DEFAULT FALSE,
-  is_deleted BOOLEAN DEFAULT FALSE
+  is_deleted BOOLEAN DEFAULT FALSE -- This keeps the session data in the DB after "deletion"
 );
 
--- 4. Registrations Table
+-- 5. Registrations Table
 CREATE TABLE IF NOT EXISTS registrations (
   reg_id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES students(user_id) ON DELETE CASCADE,
-  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL,
+  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL, -- Keeps record info if test row is removed
   module_type TEXT,
   registration_date DATE,
   status TEXT
 );
 
--- 5. Results Table
+-- 6. Results Table
 CREATE TABLE IF NOT EXISTS results (
   result_id TEXT PRIMARY KEY,
   user_id TEXT REFERENCES students(user_id) ON DELETE CASCADE,
-  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL,
+  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL, -- Keeps score context if test row is removed
   listening_score FLOAT,
   reading_score FLOAT,
   writing_score FLOAT,
@@ -74,21 +81,21 @@ CREATE TABLE IF NOT EXISTS results (
   published_by TEXT
 );
 
--- Enable RLS
+-- 7. Security & Access (Row Level Security)
 ALTER TABLE admins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE registrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE results ENABLE ROW LEVEL SECURITY;
 
--- Policies (Public Access)
+-- Policies (Public Access for this prototype - restrict these for production)
 CREATE POLICY "Allow All" ON admins FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON students FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON tests FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON registrations FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON results FOR ALL USING (true) WITH CHECK (true);
 
--- Initial Admin
+-- 8. Seed Admin
 INSERT INTO admins (admin_id, username, password, role, created_by)
 VALUES ('1', 'HA.admin01', 'HA@2007.app', 'ADMIN', 'System')
 ON CONFLICT (admin_id) DO NOTHING;
@@ -103,7 +110,7 @@ ON CONFLICT (admin_id) DO NOTHING;
     *   Click **"Deploy"**.
 
 ## 🛠 Features
-- **Supabase Integration**: Real-time database syncing.
+- **New Supabase Integration**:njbmcxkmugnabqfwvolr project connected.
 - **Score Persistence**: Even if an admin removes a session from the schedule, student results remain safely stored in their profiles.
-- **Soft Delete**: Sessions are hidden rather than purged to maintain historical accuracy.
+- **Metadata Visibility**: Room, Date, and Time remain visible for "Archived" sessions.
 - **Multi-Role**: Admin, Co-Admin, Moderator, Viewer, and Student portals.

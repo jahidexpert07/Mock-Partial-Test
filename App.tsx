@@ -7,12 +7,12 @@ import {
 } from './types';
 import { INITIAL_ADMINS, MOCK_TESTS } from './constants';
 
-const STORAGE_KEY = 'ielts_system_v17_modern_theme';
+const STORAGE_KEY = 'ielts_system_v18_final';
 const BRAND_BLUE = '#38b6ff';
 
-// --- SUPABASE CONFIGURATION ---
-const SUPABASE_URL = 'https://cirfftfeoegwzipfpyiq.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_Z64vGG6BaXHAo3BAov8WJA_8f8i3Y5b';
+// --- NEW SUPABASE CONFIGURATION (Account: njbmcxkmugnabqfwvolr) ---
+const SUPABASE_URL = 'https://njbmcxkmugnabqfwvolr.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_SS6k_XZBjOFBKzQR42pJow_cETglJ61';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -88,7 +88,9 @@ const SupabaseAPI = {
         supabase.from('results').select('*')
       ]);
 
+      // If schema doesn't exist yet, we catch it here
       if (st.error || ad.error || ts.error || rg.error || rs.error) {
+        console.warn("Supabase Sync: Tables not found or empty. Please ensure SQL setup is run.");
         return null;
       }
 
@@ -100,6 +102,7 @@ const SupabaseAPI = {
         results: rs.data || []
       };
     } catch (e) {
+      console.error("Critical API Error:", e);
       return null;
     }
   },
@@ -118,7 +121,11 @@ const SupabaseAPI = {
         if (table.data && table.data.length > 0) {
           const { error } = await supabase.from(table.name).upsert(table.data, { onConflict: table.pk });
           if (error) {
-            console.error(`Error saving to ${table.name}:`, error.message);
+            if (error.message.includes("cache")) {
+               console.error("Schema cache error. Ensure SQL script was run and refresh the page.");
+            } else {
+               console.error(`Error saving to ${table.name}:`, error.message);
+            }
             return false;
           }
         }
@@ -150,7 +157,7 @@ const getInitialState = (): AppState => {
   return {
     students: [],
     admins: INITIAL_ADMINS,
-    tests: MOCK_TESTS,
+    tests: [],
     registrations: [],
     results: []
   };
@@ -1116,12 +1123,15 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                             const test = data.tests.find((t: TestSchedule) => t.test_id === b.test_id);
                             return (
                               <tr key={b.reg_id} className="hover:bg-white/30 transition-colors">
-                                <td className="p-4 font-black text-slate-800">{b.module_type}</td>
+                                <td className="p-4 font-black text-slate-800">
+                                  {b.module_type}
+                                  {test?.is_deleted && <span className="ml-2 text-[8px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded uppercase">Archived</span>}
+                                </td>
                                 <td className="p-4">
                                   <p className="font-bold text-slate-700">{test ? formatDate(test.test_date) : '--/--/----'}</p>
-                                  <p className="text-[10px] text-slate-400 uppercase">{test?.test_time || 'Archived'}</p>
+                                  <p className="text-[10px] text-slate-400 uppercase">{test?.test_time || 'Past Session'}</p>
                                 </td>
-                                <td className="p-4 font-bold text-slate-500">{test?.room_number || 'Room Deleted'}</td>
+                                <td className="p-4 font-bold text-slate-500">{test?.room_number || 'Room Historical'}</td>
                                 <td className="p-4 text-right"><Badge color={b.status === RegistrationStatus.CONFIRMED ? 'green' : 'slate'}>{b.status}</Badge></td>
                               </tr>
                             );
@@ -1143,10 +1153,15 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                         return (
                           <div key={r.result_id} className="bg-white/30 border border-white/40 p-6 rounded-3xl shadow-sm flex flex-col md:flex-row justify-between items-center gap-6">
                             <div className="flex-1">
-                              <Badge color="brand">{test?.test_type || 'Archived Module'}</Badge>
-                              <p className="font-black text-slate-800 mt-2 text-lg">{test ? `${test.test_type} Examination` : 'Deleted Session'}</p>
+                              <div className="flex items-center gap-2">
+                                <Badge color="brand">{test?.test_type || 'Academic Result'}</Badge>
+                                {test?.is_deleted && <span className="text-[8px] bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full uppercase font-black">Archived</span>}
+                              </div>
+                              <p className="font-black text-slate-800 mt-2 text-lg">{test ? `${test.test_type} Examination` : 'Archived Results'}</p>
                               <div className="flex gap-4 mt-1">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase">{test ? formatDate(test.test_date) : '--/--/----'} • {test?.room_number || 'Historical Data'}</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase">
+                                  {test ? `${formatDate(test.test_date)} • ${test.test_day} • ${test.test_time} • ${test.room_number}` : 'Historical Context'}
+                                </p>
                                 <p className="text-[10px] font-bold text-[#6c3baa] uppercase tracking-widest">Validated by {r.published_by}</p>
                               </div>
                             </div>
@@ -1154,10 +1169,10 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                               {[{l: 'L', v: r.listening_score}, {l: 'R', v: r.reading_score}, {l: 'W', v: r.writing_score}, {l: 'S', v: r.speaking_score}].map(score => (
                                 <div key={score.l} className="w-12 h-12 flex flex-col items-center justify-center bg-white/60 rounded-xl border border-white/80 shadow-inner">
                                   <span className="text-[8px] font-black text-slate-400">{score.l}</span>
-                                  <span className="text-sm font-black text-[#6c3baa]">{score.v || '--'}</span>
+                                  <span className="text-sm font-black text-[#6c3baa]">{score.v !== undefined ? score.v : '--'}</span>
                                 </div>
                               ))}
-                              {r.overall_score && (
+                              {r.overall_score && r.overall_score > 0 && (
                                 <div className="w-12 h-12 flex flex-col items-center justify-center bg-[#6c3baa] rounded-xl text-white shadow-lg shadow-purple-200">
                                   <span className="text-[8px] font-black opacity-60">BAND</span>
                                   <span className="text-sm font-black">{r.overall_score.toFixed(1)}</span>
@@ -1179,7 +1194,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                     <Card className="!bg-[#6c3baa]/5 !border-[#6c3baa]/10">
                       <p className="text-sm font-black text-[#6c3baa] uppercase tracking-[0.2em] mb-6">Band Performance Trends</p>
                       <div className="h-64 flex items-end justify-between gap-4 px-4 border-b-2 border-slate-200/50 relative">
-                        {studentResults.filter(r => r.overall_score).map((r, i) => {
+                        {studentResults.filter(r => r.overall_score && r.overall_score > 0).map((r, i) => {
                           const score = r.overall_score || 0;
                           const height = (score / 9) * 100;
                           return (
@@ -1188,7 +1203,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                                 className="w-full max-w-[40px] rounded-t-xl bg-gradient-to-t from-[#6c3baa] to-[#B2A5FF] transition-all hover:scale-x-110 relative group-hover:shadow-2xl"
                                 style={{ height: `${height}%` }}
                               >
-                                <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded font-black opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] px-2 py-1 rounded font-black opacity-0 group-hover:opacity-10 transition-opacity">
                                   {score.toFixed(1)}
                                 </div>
                               </div>
@@ -1196,7 +1211,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                             </div>
                           );
                         })}
-                        {studentResults.filter(r => r.overall_score).length === 0 && (
+                        {studentResults.filter(r => r.overall_score && r.overall_score > 0).length === 0 && (
                           <div className="absolute inset-0 flex items-center justify-center text-slate-400 font-bold italic">Insufficient mock data to visualize progress.</div>
                         )}
                       </div>
@@ -1204,8 +1219,8 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
                         <div className="p-4 bg-white/60 rounded-2xl border border-white/80">
                           <p className="text-[10px] font-black text-slate-400 uppercase mb-1">Average Band</p>
                           <p className="text-2xl font-black text-slate-900">
-                            {studentResults.length > 0 
-                              ? (studentResults.reduce((acc, r) => acc + (r.overall_score || 0), 0) / studentResults.length).toFixed(1) 
+                            {studentResults.filter(r => r.overall_score && r.overall_score > 0).length > 0 
+                              ? (studentResults.reduce((acc, r) => acc + (r.overall_score || 0), 0) / studentResults.filter(r => r.overall_score && r.overall_score > 0).length).toFixed(1) 
                               : '0.0'}
                           </p>
                         </div>
@@ -1630,14 +1645,17 @@ const RegistrationHistory = ({ student, data }: any) => {
                 return (
                   <tr key={reg.reg_id} className="hover:bg-white/40 transition-colors group">
                     <td className="p-6">
-                      <p className="font-black text-[#6c3baa]">{reg.module_type}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-black text-[#6c3baa]">{reg.module_type}</p>
+                        {test?.is_deleted && <span className="px-1.5 py-0.5 bg-slate-100 text-slate-400 rounded text-[7px] font-black uppercase">Archived</span>}
+                      </div>
                       <p className="text-[10px] font-bold text-slate-400 uppercase">Reg ID: {reg.reg_id}</p>
                     </td>
                     <td className="p-6">
                       <div className="flex flex-col">
                         <span className="font-black text-slate-900">{test ? formatDate(test.test_date) : '--/--/----'} {test ? `(${test.test_day})` : ''}</span>
                         <span className="text-[11px] font-bold text-slate-500 uppercase tracking-tight">
-                          {test?.test_time || 'Historical'} • {test?.room_number || 'Archived Location'}
+                          {test ? `${test.test_time} • ${test.room_number}` : 'Historical Data'}
                         </span>
                       </div>
                     </td>
@@ -1676,9 +1694,12 @@ const StudentResults = ({ student, data }: any) => {
             <Card key={res.result_id} className="group hover:border-[#6c3baa] flex flex-col md:flex-row gap-10 items-stretch">
               <div className="flex-1 flex flex-col justify-center">
                 <div className="mb-6">
-                   <Badge color="brand">{test?.test_type || 'Archived Module'}</Badge>
-                   <h3 className="text-3xl font-black text-slate-900 mt-2">{test?.test_type === TestType.MOCK || isMock ? 'Assessment Record' : `${test?.test_type || 'Deleted'} Examination`}</h3>
-                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest mt-1">Ref ID: {res.test_id}</p>
+                   <div className="flex items-center gap-2">
+                     <Badge color="brand">{test?.test_type || 'Academic Module'}</Badge>
+                     {test?.is_deleted && <span className="px-2 py-0.5 bg-slate-100 text-slate-400 rounded-full text-[8px] font-black uppercase">Archived</span>}
+                   </div>
+                   <h3 className="text-3xl font-black text-slate-900 mt-2">{test ? `${test.test_type} Assessment` : 'Historical Record'}</h3>
+                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest mt-1">Ref ID: {res.test_id || 'System'}</p>
                 </div>
                 <div className={`grid gap-6 bg-white/20 p-6 rounded-[2rem] border border-white/40 ${isMock ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 max-w-[200px]'}`}>
                   {scoresToDisplay.map((s, idx) => (
@@ -1694,9 +1715,9 @@ const StudentResults = ({ student, data }: any) => {
                    <p className="text-[9px] font-black text-slate-400 uppercase mb-3">Examination Audit</p>
                    <div className="space-y-3">
                       <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Date:</span><span className="text-xs font-black text-slate-900">{test ? formatDate(test.test_date) : formatDate(res.published_date)}</span></div>
-                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Day:</span><span className="text-xs font-black text-slate-900">{test?.test_day || 'Archived'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Day:</span><span className="text-xs font-black text-slate-900">{test?.test_day || 'Historical'}</span></div>
                       <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Time:</span><span className="text-xs font-black text-slate-900">{test?.test_time || 'Archived'}</span></div>
-                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Room:</span><span className="text-xs font-black text-slate-900">{test?.room_number || 'Historical'}</span></div>
+                      <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Room:</span><span className="text-xs font-black text-slate-900">{test?.room_number || 'Archived'}</span></div>
                       <div className="flex justify-between items-center"><span className="text-xs font-bold text-slate-500">Status:</span><span className="text-xs font-black text-emerald-600 uppercase">Validated</span></div>
                    </div>
                 </div>
@@ -1896,7 +1917,7 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
 };
 
 const StaffManager = ({ admins, onAdd, onDelete, isReadOnly }: { admins: Admin[], onAdd: (a: any) => void, onDelete: (id: string) => void, isReadOnly: boolean }) => {
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, useStateAdd] = useState(false);
   const [form, setForm] = useState({ username: '', password: '', role: UserRole.MODERATOR });
   const [deleteAdminID, setDeleteAdminID] = useState<string | null>(null);
   const confirmDeleteAdmin = () => {
@@ -1904,10 +1925,10 @@ const StaffManager = ({ admins, onAdd, onDelete, isReadOnly }: { admins: Admin[]
   };
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
-      <div className="flex justify-between items-center"><h2 className="text-4xl font-black text-slate-900">Access Management</h2>{!isReadOnly && <Button onClick={() => setShowAdd(true)} variant="primary" className="px-8 whitespace-nowrap">+ Grant Access</Button>}</div>
+      <div className="flex justify-between items-center"><h2 className="text-4xl font-black text-slate-900">Access Management</h2>{!isReadOnly && <Button onClick={() => useStateAdd(true)} variant="primary" className="px-8 whitespace-nowrap">+ Grant Access</Button>}</div>
       <ConfirmationModal isOpen={!!deleteAdminID} title="Revoke Access" message="Are you sure you want to permanently remove this administrator? This will revoke all their system privileges and remove their handle from the database." confirmText="Confirm Remove" onCancel={() => setDeleteAdminID(null)} onConfirm={confirmDeleteAdmin} />
       {!isReadOnly && showAdd && (
-        <Card title="Register Management Handle"><form onSubmit={(e) => { e.preventDefault(); onAdd(form); setShowAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md" /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Privilege Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div><div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => { setShowAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div></form></Card>
+        <Card title="Register Management Handle"><form onSubmit={(e) => { e.preventDefault(); onAdd(form); useStateAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md" /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">Privilege Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60 backdrop-blur-md"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div><div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => { useStateAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div></form></Card>
       )}
       <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl">
         <div className="overflow-x-auto"><table className="w-full text-left text-sm border-collapse min-w-[500px]"><thead className="bg-[#6c3baa]/90 backdrop-blur-xl text-white"><tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Handle Mapping</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Access Layer</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr></thead><tbody className="divide-y divide-white/20">{admins.map(a => (<tr key={a.admin_id} className="hover:bg-white/40 transition-colors"><td className="p-6"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden"><UserAvatar role={a.role} id={a.admin_id} name={a.username} className="w-full h-full" /></div><span className="font-black text-slate-900">{a.username}</span></div></td><td className="p-6"><Badge color="brand">{a.role.replace('_', ' ')}</Badge></td><td className="p-6 text-right">{!isReadOnly && a.username !== 'HA.admin01' && (<button onClick={() => setDeleteAdminID(a.admin_id)} className="text-red-400 font-black text-xs hover:text-red-600 uppercase tracking-widest">Revoke Access</button>)}</td></tr>))}</tbody></table></div>
