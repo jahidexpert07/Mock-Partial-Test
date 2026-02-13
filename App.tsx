@@ -20,7 +20,7 @@ const SPEAKING_TIMES = [
 
 const SPEAKING_ROOMS = ["Room No: 01", "Room No: 02", "Room No: 03"];
 
-// --- NEW SUPABASE CONFIGURATION ---
+// --- SUPABASE CONFIGURATION ---
 const SUPABASE_URL = 'https://njbmcxkmugnabqfwvolr.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_SS6k_XZBjOFBKzQR42pJow_cETglJ61';
 
@@ -91,22 +91,32 @@ const generateAvatar = (role: UserRole, id: string) => {
 const SupabaseAPI = {
   async getData(): Promise<AppState | null> {
     try {
-      const [st, ad, ts, rg, rs, cfg] = await Promise.all([
-        supabase.from('students').select('*'),
-        supabase.from('admins').select('*'),
-        supabase.from('tests').select('*'),
-        supabase.from('registrations').select('*'),
-        supabase.from('results').select('*'),
-        supabase.from('settings').select('*').eq('key', 'system_lock').single()
+      const fetchTable = async (name: string) => {
+        const { data, error } = await supabase.from(name).select('*');
+        if (error) {
+          console.error(`Error fetching ${name}:`, error);
+          return [];
+        }
+        return data || [];
+      };
+
+      const [st, ad, ts, rg, rs] = await Promise.all([
+        fetchTable('students'),
+        fetchTable('admins'),
+        fetchTable('tests'),
+        fetchTable('registrations'),
+        fetchTable('results')
       ]);
 
+      const { data: lockData } = await supabase.from('settings').select('*').eq('key', 'system_lock').maybeSingle();
+
       return {
-        students: st.data || [],
-        admins: ad.data && ad.data.length > 0 ? ad.data : INITIAL_ADMINS,
-        tests: ts.data || MOCK_TESTS,
-        registrations: rg.data || [],
-        results: rs.data || [],
-        isSystemLocked: cfg.data?.value === 'true'
+        students: st,
+        admins: ad.length > 0 ? ad : INITIAL_ADMINS,
+        tests: ts,
+        registrations: rg,
+        results: rs,
+        isSystemLocked: lockData?.value === 'true'
       };
     } catch (e) {
       console.error("Critical API Error:", e);
@@ -127,7 +137,7 @@ const SupabaseAPI = {
       for (const table of tables) {
         if (table.data && table.data.length > 0) {
           const { error } = await supabase.from(table.name).upsert(table.data, { onConflict: table.pk });
-          if (error) return false;
+          if (error) console.error(`Error saving ${table.name}:`, error);
         }
       }
       
@@ -143,12 +153,15 @@ const SupabaseAPI = {
   },
 
   async deleteStudent(userId: string) {
-    // Relying on ON DELETE CASCADE in the database schema provided in the SQL block
     return supabase.from('students').delete().eq('user_id', userId);
   },
 
   async deleteAdmin(adminId: string) {
     return supabase.from('admins').delete().eq('admin_id', adminId);
+  },
+
+  async deleteResult(resultId: string) {
+    return supabase.from('results').delete().eq('result_id', resultId);
   }
 };
 
@@ -345,7 +358,7 @@ const LoginPage = ({ data, onLogin }: { data: AppState, onLogin: (id: string, ro
               <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
             </div>
             <h3 className="text-xl font-black text-slate-900 mb-2">Login Disabled</h3>
-            <p className="text-sm font-bold text-slate-500 leading-relaxed mb-8">Result Publishing Onoing.<br/>Please come back after some time.</p>
+            <p className="text-sm font-bold text-slate-500 leading-relaxed mb-8">Result Publishing Ongoing.<br/>Please come back after some time.</p>
             <Button variant="primary" className="w-full" onClick={() => setShowLockPopup(false)}>Understood</Button>
           </Card>
         </div>
@@ -475,7 +488,7 @@ const App = () => {
       setIsSyncing(true);
       await SupabaseAPI.saveData(appData);
       setIsSyncing(false);
-    }, 1500);
+    }, 2000);
     return () => clearTimeout(syncTimer);
   }, [appData]);
 
@@ -661,8 +674,9 @@ const App = () => {
             <Route path="/admin-results" element={<AdminResults data={appData} 
                 onAddResult={(r:any) => setAppData(p => ({...p, results: [...p.results, {...r, result_id: Math.random().toString(36).substr(2,5), published_by: currentAdmin?.username || 'Admin', published_date: new Date().toISOString()}]}))}
                 onUpdateResult={(r: Result) => setAppData(p => ({...p, results: p.results.map(x => x.result_id === r.result_id ? { ...x, ...r } : x)}))}
-                onDeleteResult={(id: string) => {
+                onDeleteResult={async (id: string) => {
                    setAppData(p => ({ ...p, results: p.results.filter(r => r.result_id !== id) }));
+                   await SupabaseAPI.deleteResult(id);
                 }}
                 isReadOnly={isReadOnly}
             />} />
@@ -941,7 +955,6 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
   const [activeTab, setActiveTab] = useState<'profile' | 'bookings' | 'scores' | 'progress'>('profile');
   const [form, setForm] = useState({ user_id: '', name: '', phone: '', gender: Gender.MALE, batch_number: '', listening: 0, reading: 0, writing: 0, speaking: 0, mock: 0, expiry_date: new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toISOString().split('T')[0] });
 
-  // Fix: Defined handleOpenProfile function which was missing
   const handleOpenProfile = (s: Student) => {
     setViewStudent(s);
     setEditForm({ ...s });
@@ -952,7 +965,6 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
   const filtered = useMemo(() => [...students].sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .filter((s: Student) => s.name.toLowerCase().includes(search.toLowerCase()) || s.user_id.toLowerCase().includes(search.toLowerCase()) || s.phone.includes(search) || s.batch_number.toLowerCase().includes(search.toLowerCase())), [students, search]);
   const studentBookings = useMemo(() => viewStudent ? data.registrations.filter((r: Registration) => r.user_id === viewStudent.user_id) : [], [viewStudent, data.registrations]);
-  const studentResults = useMemo(() => viewStudent ? data.results.filter((r: Result) => r.user_id === viewStudent.user_id) : [], [viewStudent, data.results]);
 
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
@@ -1344,7 +1356,7 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
             <thead className="bg-[#6c3baa]/90 text-white"><tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Candidate</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Score Vector</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Outcome</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr></thead>
             <tbody className="divide-y divide-white/20">
               {filteredResults.map((r:any) => { const s = data.students.find(x => x.user_id === r.user_id); return (
-                <tr key={r.result_id} className="hover:bg-white/40 transition-colors"><td className="p-6"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden"><UserAvatar role={UserRole.STUDENT} id={r.user_id} name={s?.name} className="w-full h-full" /></div><div><span className="font-black text-slate-900 block">{s?.name || 'Candidate'}</span><span className="text-[9px] font-bold text-slate-500 uppercase">{r.user_id}</span></div></div></td><td className="p-6 font-black text-slate-600 font-mono text-xs">L:{r.listening_score} R:{r.reading_score} W:{r.writing_score} S:{r.speaking_score}</td><td className="p-6">{(r.overall_score > 0) ? <span className="text-2xl font-black text-[#6c3baa]">{r.overall_score.toFixed(1)}</span> : <Badge color="slate">MODULE DATA</Badge>}</td><td className="p-6 text-right space-x-3 whitespace-nowrap">{!isReadOnly && <button onClick={() => { setEditingResultId(r.result_id); setForm({user_id: r.user_id, test_id: r.test_id, l: r.listening_score||0, r: r.reading_score||0, w: r.writing_score||0, s: r.speaking_score||0, overall: r.overall_score||0}); setShowAdd(true); }} className="text-[#6c3baa] font-black text-xs hover:underline uppercase">Edit</button>}{!isReadOnly && <button onClick={() => { if(confirm('Delete?')) onDeleteResult(r.result_id); }} className="text-red-400 font-black text-xs hover:text-red-600 uppercase">Revoke</button>}</td></tr>
+                <tr key={r.result_id} className="hover:bg-white/40 transition-colors"><td className="p-6"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-white/40 shadow-sm border border-white/60 overflow-hidden"><UserAvatar role={UserRole.STUDENT} id={r.user_id} name={s?.name} className="w-full h-full" /></div><div><span className="font-black text-slate-900 block">{s?.name || 'Candidate'}</span><span className="text-[9px] font-bold text-slate-500 uppercase">{r.user_id}</span></div></div></td><td className="p-6 font-black text-slate-600 font-mono text-xs">L:{r.listening_score} R:{r.reading_score} W:{r.writing_score} S:{r.speaking_score}</td><td className="p-6">{(r.overall_score > 0) ? <span className="text-2xl font-black text-[#6c3baa]">{r.overall_score.toFixed(1)}</span> : <Badge color="slate">MODULE DATA</Badge>}</td><td className="p-6 text-right space-x-3 whitespace-nowrap">{!isReadOnly && <button onClick={() => { setEditingResultId(r.result_id); setForm({user_id: r.user_id, test_id: r.test_id, l: r.listening_score||0, r: r.reading_score||0, w: r.writing_score||0, s: r.speaking_score||0, overall: r.overall_score||0}); setShowAdd(true); }} className="text-[#6c3baa] font-black text-xs hover:underline uppercase">Edit</button>}{!isReadOnly && <button onClick={() => { if(confirm('Permanently delete this result?')) onDeleteResult(r.result_id); }} className="text-red-400 font-black text-xs hover:text-red-600 uppercase">Revoke</button>}</td></tr>
               );})}
             </tbody>
           </table>
