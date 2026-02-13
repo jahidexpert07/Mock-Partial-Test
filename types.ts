@@ -81,6 +81,11 @@ export interface Registration {
   module_type: TestType;
   registration_date: string;
   status: RegistrationStatus;
+  speaking_date?: string;
+  speaking_time?: string;
+  speaking_room?: string;
+  guest_name?: string; // For paid students without accounts
+  guest_phone?: string; // For paid students without accounts
 }
 
 export interface Result {

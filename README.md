@@ -6,15 +6,14 @@ A modern, glassmorphic IELTS test management portal connected to Supabase.
 ## 🚀 Setup Instructions
 
 ### 1. Database Setup (Supabase)
-Go to your [Supabase Dashboard](https://supabase.com), open the **SQL Editor**, and run the following script to create your tables. This script includes soft-delete support and score persistence logic.
+Go to your [Supabase Dashboard](https://supabase.com), open the **SQL Editor**, and run the following script. **Note: This script uses CASCADE on student deletion to ensure all registration and result data is removed when a student's account is wiped (e.g., when expired).**
 
 ```sql
--- 1. CLEAN START (Optional: removes existing tables to ensure fresh schema)
--- DROP TABLE IF EXISTS results;
--- DROP TABLE IF EXISTS registrations;
--- DROP TABLE IF EXISTS tests;
--- DROP TABLE IF EXISTS students;
--- DROP TABLE IF EXISTS admins;
+-- 1. Settings Table (For Maintenance Mode)
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 
 -- 2. Admins Table
 CREATE TABLE IF NOT EXISTS admins (
@@ -42,7 +41,7 @@ CREATE TABLE IF NOT EXISTS students (
   expiry_date DATE
 );
 
--- 4. Test Schedules Table (Soft Delete Support)
+-- 4. Test Schedules Table
 CREATE TABLE IF NOT EXISTS tests (
   test_id TEXT PRIMARY KEY,
   test_type TEXT NOT NULL,
@@ -54,24 +53,29 @@ CREATE TABLE IF NOT EXISTS tests (
   current_registrations INT DEFAULT 0,
   created_by TEXT,
   is_closed BOOLEAN DEFAULT FALSE,
-  is_deleted BOOLEAN DEFAULT FALSE -- This keeps the session data in the DB after "deletion"
+  is_deleted BOOLEAN DEFAULT FALSE 
 );
 
--- 5. Registrations Table
+-- 5. Registrations Table (With CASCADE DELETE)
 CREATE TABLE IF NOT EXISTS registrations (
   reg_id TEXT PRIMARY KEY,
-  user_id TEXT REFERENCES students(user_id) ON DELETE CASCADE,
-  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL, -- Keeps record info if test row is removed
+  user_id TEXT NOT NULL,
+  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL, 
   module_type TEXT,
   registration_date DATE,
-  status TEXT
+  status TEXT,
+  speaking_date DATE,
+  speaking_time TEXT,
+  speaking_room TEXT,
+  guest_name TEXT,
+  guest_phone TEXT
 );
 
--- 6. Results Table
+-- 6. Results Table (With CASCADE DELETE)
 CREATE TABLE IF NOT EXISTS results (
   result_id TEXT PRIMARY KEY,
-  user_id TEXT REFERENCES students(user_id) ON DELETE CASCADE,
-  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL, -- Keeps score context if test row is removed
+  user_id TEXT NOT NULL,
+  test_id TEXT REFERENCES tests(test_id) ON DELETE SET NULL, 
   listening_score FLOAT,
   reading_score FLOAT,
   writing_score FLOAT,
@@ -81,36 +85,38 @@ CREATE TABLE IF NOT EXISTS results (
   published_by TEXT
 );
 
--- 7. Security & Access (Row Level Security)
+-- 7. Security & Access
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE registrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE results ENABLE ROW LEVEL SECURITY;
 
--- Policies (Public Access for this prototype - restrict these for production)
+-- Public Access Policies
+CREATE POLICY "Allow All" ON settings FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON admins FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON students FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON tests FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON registrations FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow All" ON results FOR ALL USING (true) WITH CHECK (true);
 
--- 8. Seed Admin
+-- 8. Default Admin
 INSERT INTO admins (admin_id, username, password, role, created_by)
 VALUES ('1', 'HA.admin01', 'HA@2007.app', 'ADMIN', 'System')
 ON CONFLICT (admin_id) DO NOTHING;
+
+-- 9. Initialize System Lock
+INSERT INTO settings (key, value)
+VALUES ('system_lock', 'false')
+ON CONFLICT (key) DO NOTHING;
 ```
 
 ### 2. Deployment (GitHub & Vercel)
 1.  **Push to GitHub**: Create a new repository on GitHub and push these files.
-2.  **Connect to Vercel**:
-    *   Go to [Vercel](https://vercel.com) and click **"Add New Project"**.
-    *   Import your GitHub repository.
-    *   Vercel will automatically detect the Vite settings.
-    *   Click **"Deploy"**.
+2.  **Connect to Vercel**: Vercel will automatically detect the Vite settings.
 
 ## 🛠 Features
-- **New Supabase Integration**:njbmcxkmugnabqfwvolr project connected.
-- **Score Persistence**: Even if an admin removes a session from the schedule, student results remain safely stored in their profiles.
-- **Metadata Visibility**: Room, Date, and Time remain visible for "Archived" sessions.
-- **Multi-Role**: Admin, Co-Admin, Moderator, Viewer, and Student portals.
+- **Automatic Account Wiping**: When an admin logs in, the system automatically checks for expired students and permanently removes their accounts and all related data (registrations, scores).
+- **Maintenance Lockdown**: Admins can block student access with a custom "Result Publishing Ongoing" message.
+- **Paid Test receipts**: Confirmation receipts for guest students without portal accounts.
