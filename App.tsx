@@ -124,28 +124,17 @@ const SupabaseAPI = {
     }
   },
 
-  async saveData(data: AppState): Promise<boolean> {
-    try {
-      const tables = [
-        { name: 'students', data: data.students, pk: 'user_id' },
-        { name: 'admins', data: data.admins, pk: 'admin_id' },
-        { name: 'tests', data: data.tests, pk: 'test_id' },
-        { name: 'registrations', data: data.registrations, pk: 'reg_id' },
-        { name: 'results', data: data.results, pk: 'result_id' }
-      ];
-
-      for (const table of tables) {
-        if (table.data && table.data.length > 0) {
-          const { error } = await supabase.from(table.name).upsert(table.data, { onConflict: table.pk });
-          if (error) console.error(`Error saving ${table.name}:`, error);
-        }
-      }
-      
-      await supabase.from('settings').upsert({ key: 'system_lock', value: data.isSystemLocked ? 'true' : 'false' }, { onConflict: 'key' });
-      return true;
-    } catch (e) {
-      return false;
+  // Atomic Upsert Helper
+  async upsert(table: string, data: any, pk: string) {
+    const { error } = await supabase.from(table).upsert(data, { onConflict: pk });
+    if (error) {
+      console.error(`Error upserting into ${table}:`, error);
+      throw error;
     }
+  },
+
+  async updateSystemLock(isLocked: boolean) {
+    await supabase.from('settings').upsert({ key: 'system_lock', value: isLocked ? 'true' : 'false' }, { onConflict: 'key' });
   },
 
   async deleteTest(testId: string) {
@@ -160,8 +149,8 @@ const SupabaseAPI = {
     return supabase.from('admins').delete().eq('admin_id', adminId);
   },
 
-  async deleteResult(resultId: string) {
-    return supabase.from('results').delete().eq('result_id', resultId);
+  async deleteResult(result_id: string) {
+    return supabase.from('results').delete().eq('result_id', result_id);
   }
 };
 
@@ -482,16 +471,6 @@ const App = () => {
     initCloud();
   }, [userRole]);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
-    const syncTimer = setTimeout(async () => {
-      setIsSyncing(true);
-      await SupabaseAPI.saveData(appData);
-      setIsSyncing(false);
-    }, 2000);
-    return () => clearTimeout(syncTimer);
-  }, [appData]);
-
   const currentStudent = useMemo(() => {
     if (userRole === UserRole.STUDENT && loggedID) return appData.students.find(s => s.user_id === loggedID) || null;
     return null;
@@ -607,50 +586,99 @@ const App = () => {
 
         <main className="flex-1 p-6 md:p-12 overflow-y-auto max-h-screen">
           <Routes>
-            <Route path="/" element={userRole === UserRole.STUDENT ? <StudentDashboard student={currentStudent!} data={appData} /> : <AdminDashboard data={appData} onToggleLock={() => setAppData(prev => ({ ...prev, isSystemLocked: !prev.isSystemLocked }))} />} />
+            <Route path="/" element={userRole === UserRole.STUDENT ? <StudentDashboard student={currentStudent!} data={appData} /> : <AdminDashboard data={appData} onToggleLock={async () => {
+              const newLockState = !appData.isSystemLocked;
+              setAppData(prev => ({ ...prev, isSystemLocked: newLockState }));
+              await SupabaseAPI.updateSystemLock(newLockState);
+            }} />} />
             <Route path="/students" element={<StudentManager students={appData.students} 
                 currentAdmin={currentAdmin} userRole={userRole}
-                onAdd={(s:any) => {
+                onAdd={async (s:any) => {
                   const existing = appData.students.find(x => x.user_id === s.user_id);
                   if (existing) { alert('User ID already exists.'); return null; }
+                  
+                  // Clean up the object to match database columns
+                  const { listening, reading, writing, speaking, mock, ...coreData } = s;
+                  
                   const newStudent: Student = { 
-                    ...s, 
+                    ...coreData, 
                     avatar_url: generateAvatar(UserRole.STUDENT, s.user_id),
                     username: s.user_id, 
                     password: Math.random().toString(36).substr(2, 8).toUpperCase(), 
                     created_by: currentAdmin?.username || 'Admin', 
                     created_at: new Date().toISOString() 
                   };
-                  setAppData(prev => ({ ...prev, students: [...prev.students, newStudent] }));
-                  return newStudent;
+
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.upsert('students', newStudent, 'user_id');
+                    setAppData(prev => ({ ...prev, students: [...prev.students, newStudent] }));
+                    return newStudent;
+                  } finally {
+                    setIsSyncing(false);
+                  }
                 }} 
-                onUpdate={(s: Student) => setAppData(p => ({ ...p, students: p.students.map(x => x.user_id === s.user_id ? s : x) }))}
+                onUpdate={async (s: Student) => {
+                  setIsSyncing(true);
+                  try {
+                    // Type safety check: Student interface doesn't have individual test columns
+                    await SupabaseAPI.upsert('students', s, 'user_id');
+                    setAppData(p => ({ ...p, students: p.students.map(x => x.user_id === s.user_id ? s : x) }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
+                }}
                 onDelete={async (id:string) => {
-                  setAppData(p => ({
-                    ...p,
-                    students: p.students.filter(s => s.user_id !== id),
-                    registrations: p.registrations.filter(r => r.user_id !== id),
-                    results: p.results.filter(r => r.user_id !== id)
-                  }));
-                  await SupabaseAPI.deleteStudent(id);
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.deleteStudent(id);
+                    setAppData(p => ({
+                      ...p,
+                      students: p.students.filter(s => s.user_id !== id),
+                      registrations: p.registrations.filter(r => r.user_id !== id),
+                      results: p.results.filter(r => r.user_id !== id)
+                    }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
                 }} 
                 data={appData} isReadOnly={isReadOnly} 
             />} />
             <Route path="/schedules" element={<ScheduleManager data={appData} 
-                onAdd={(t:any) => {
-                  setAppData(p => ({ ...p, tests: [...p.tests, { ...t, test_id: Math.random().toString(36).substr(2,6), current_registrations: 0, created_by: currentAdmin?.username || 'Admin', is_closed: false, is_deleted: false }] }));
+                onAdd={async (t:any) => {
+                  const newTest = { ...t, test_id: Math.random().toString(36).substr(2,6), current_registrations: 0, created_by: currentAdmin?.username || 'Admin', is_closed: false, is_deleted: false };
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.upsert('tests', newTest, 'test_id');
+                    setAppData(p => ({ ...p, tests: [...p.tests, newTest] }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
                 }}
-                onUpdate={(t: TestSchedule) => setAppData(p => ({ ...p, tests: p.tests.map(x => x.test_id === t.test_id ? t : x) }))}
+                onUpdate={async (t: TestSchedule) => {
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.upsert('tests', t, 'test_id');
+                    setAppData(p => ({ ...p, tests: p.tests.map(x => x.test_id === t.test_id ? t : x) }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
+                }}
                 onDelete={async (id:string) => {
-                  setAppData(p => ({ 
-                    ...p, 
-                    tests: p.tests.map(t => t.test_id === id ? { ...t, is_deleted: true } : t)
-                  }));
-                  await SupabaseAPI.deleteTest(id);
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.deleteTest(id);
+                    setAppData(p => ({ 
+                      ...p, 
+                      tests: p.tests.map(t => t.test_id === id ? { ...t, is_deleted: true } : t)
+                    }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
                 }}
                 isReadOnly={isReadOnly || userRole === UserRole.MODERATOR}
             />} />
-            <Route path="/paid-test" element={<PaidTestManager data={appData} onRegister={(t: any, guestInfo: { name: string, phone: string }, speakingSlot?: { date: string, room: string, time: string }) => {
+            <Route path="/paid-test" element={<PaidTestManager data={appData} onRegister={async (t: any, guestInfo: { name: string, phone: string }, speakingSlot?: { date: string, room: string, time: string }) => {
                 const newReg: Registration = { 
                   reg_id: Math.random().toString(36).substr(2, 9), 
                   user_id: `GUEST-${Date.now()}`, 
@@ -664,24 +692,53 @@ const App = () => {
                   guest_name: guestInfo.name,
                   guest_phone: guestInfo.phone
                 };
-                setAppData(prev => ({ 
-                  ...prev, 
-                  registrations: [...prev.registrations, newReg], 
-                  tests: prev.tests.map(x => x.test_id === t.test_id ? { ...x, current_registrations: x.current_registrations + 1 } : x)
-                }));
-                return newReg;
+                setIsSyncing(true);
+                try {
+                  await SupabaseAPI.upsert('registrations', newReg, 'reg_id');
+                  await SupabaseAPI.upsert('tests', { ...t, current_registrations: t.current_registrations + 1 }, 'test_id');
+                  setAppData(prev => ({ 
+                    ...prev, 
+                    registrations: [...prev.registrations, newReg], 
+                    tests: prev.tests.map(x => x.test_id === t.test_id ? { ...x, current_registrations: x.current_registrations + 1 } : x)
+                  }));
+                  return newReg;
+                } finally {
+                  setIsSyncing(false);
+                }
             }} isReadOnly={isReadOnly} />} />
             <Route path="/admin-results" element={<AdminResults data={appData} 
-                onAddResult={(r:any) => setAppData(p => ({...p, results: [...p.results, {...r, result_id: Math.random().toString(36).substr(2,5), published_by: currentAdmin?.username || 'Admin', published_date: new Date().toISOString()}]}))}
-                onUpdateResult={(r: Result) => setAppData(p => ({...p, results: p.results.map(x => x.result_id === r.result_id ? { ...x, ...r } : x)}))}
+                onAddResult={async (r:any) => {
+                  const newResult = {...r, result_id: Math.random().toString(36).substr(2,5), published_by: currentAdmin?.username || 'Admin', published_date: new Date().toISOString()};
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.upsert('results', newResult, 'result_id');
+                    setAppData(p => ({...p, results: [...p.results, newResult]}));
+                  } finally {
+                    setIsSyncing(false);
+                  }
+                }}
+                onUpdateResult={async (r: Result) => {
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.upsert('results', r, 'result_id');
+                    setAppData(p => ({...p, results: p.results.map(x => x.result_id === r.result_id ? { ...x, ...r } : x)}));
+                  } finally {
+                    setIsSyncing(false);
+                  }
+                }}
                 onDeleteResult={async (id: string) => {
-                   setAppData(p => ({ ...p, results: p.results.filter(r => r.result_id !== id) }));
-                   await SupabaseAPI.deleteResult(id);
+                   setIsSyncing(true);
+                   try {
+                     await SupabaseAPI.deleteResult(id);
+                     setAppData(p => ({ ...p, results: p.results.filter(r => r.result_id !== id) }));
+                   } finally {
+                     setIsSyncing(false);
+                   }
                 }}
                 isReadOnly={isReadOnly}
             />} />
             <Route path="/reports" element={<ReportsView data={appData} />} />
-            <Route path="/tests" element={<AvailableTests student={currentStudent} data={appData} onRegister={(t: any, speakingSlot?: { date: string, room: string, time: string }) => {
+            <Route path="/tests" element={<AvailableTests student={currentStudent} data={appData} onRegister={async (t: any, speakingSlot?: { date: string, room: string, time: string }) => {
                 if (!currentStudent) return;
                 const key = t.test_type.toLowerCase() as keyof RemainingTests;
                 const newReg: Registration = { 
@@ -695,24 +752,45 @@ const App = () => {
                   speaking_time: speakingSlot?.time,
                   speaking_room: speakingSlot?.room
                 };
-                setAppData(prev => ({ 
-                  ...prev, 
-                  registrations: [...prev.registrations, newReg], 
-                  tests: prev.tests.map(x => x.test_id === t.test_id ? { ...x, current_registrations: x.current_registrations + 1 } : x), 
-                  students: prev.students.map(s => s.user_id === currentStudent.user_id ? { ...s, remaining_tests: { ...s.remaining_tests, [key]: s.remaining_tests[key] - 1 } } : s) 
-                }));
-                alert('Test successfully booked!');
+                setIsSyncing(true);
+                try {
+                  await SupabaseAPI.upsert('registrations', newReg, 'reg_id');
+                  await SupabaseAPI.upsert('tests', { ...t, current_registrations: t.current_registrations + 1 }, 'test_id');
+                  const updatedStudent = { ...currentStudent, remaining_tests: { ...currentStudent.remaining_tests, [key]: currentStudent.remaining_tests[key] - 1 } };
+                  await SupabaseAPI.upsert('students', updatedStudent, 'user_id');
+                  
+                  setAppData(prev => ({ 
+                    ...prev, 
+                    registrations: [...prev.registrations, newReg], 
+                    tests: prev.tests.map(x => x.test_id === t.test_id ? { ...x, current_registrations: x.current_registrations + 1 } : x), 
+                    students: prev.students.map(s => s.user_id === currentStudent.user_id ? updatedStudent : s) 
+                  }));
+                  alert('Test successfully booked!');
+                } finally {
+                  setIsSyncing(false);
+                }
             }} />} />
             <Route path="/history" element={<RegistrationHistory student={currentStudent} data={appData} />} />
             <Route path="/results" element={<StudentResults student={currentStudent} data={appData} />} />
             <Route path="/staff" element={<StaffManager admins={appData.admins} isReadOnly={isReadOnly}
-                onAdd={(a) => {
+                onAdd={async (a: any) => {
                   const na: Admin = { ...a, admin_id: Math.random().toString(36).substr(2, 6).toUpperCase(), created_by: currentAdmin?.username || 'Admin', created_at: new Date().toISOString() };
-                  setAppData(p => ({ ...p, admins: [...p.admins, na] }));
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.upsert('admins', na, 'admin_id');
+                    setAppData(p => ({ ...p, admins: [...p.admins, na] }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
                 }}
-                onDelete={async (id) => {
-                  setAppData(p => ({ ...p, admins: p.admins.filter(x => x.admin_id !== id) }));
-                  await SupabaseAPI.deleteAdmin(id);
+                onDelete={async (id: string) => {
+                  setIsSyncing(true);
+                  try {
+                    await SupabaseAPI.deleteAdmin(id);
+                    setAppData(p => ({ ...p, admins: p.admins.filter(x => x.admin_id !== id) }));
+                  } finally {
+                    setIsSyncing(false);
+                  }
                 }}
             />} />
             <Route path="*" element={<Navigate to="/" />} />
@@ -980,7 +1058,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
       <ConfirmationModal isOpen={!!deleteCandidateID} title="Remove Candidate" message="Permanently remove candidate? This will wipe all profile data, registrations, and results from the database." confirmText="Confirm Remove" onCancel={() => setDeleteCandidateID(null)} onConfirm={() => { onDelete(deleteCandidateID); setDeleteCandidateID(null); }} />
       {showAdd && (
         <Card title="Register New Candidate">
-          <form onSubmit={(e) => { e.preventDefault(); const res = onAdd({...form, remaining_tests: { listening: form.listening, reading: form.reading, writing: form.writing, speaking: form.speaking, mock: form.mock }}); if(res) setShowAdd(false); }} className="space-y-8">
+          <form onSubmit={async (e) => { e.preventDefault(); const res = await onAdd({...form, remaining_tests: { listening: form.listening, reading: form.reading, writing: form.writing, speaking: form.speaking, mock: form.mock }}); if(res) setShowAdd(false); }} className="space-y-8">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Candidate ID</label><input placeholder="Ex: HA-ST-101" required value={form.user_id} onChange={e => setForm({...form, user_id: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl outline-none font-bold bg-white/60" /></div>
               <div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Full Name</label><input placeholder="Ex: John Doe" required value={form.name} onChange={e => setForm({...form, name: e.target.value})} className="w-full px-5 py-3 border border-slate-200/50 rounded-2xl outline-none font-bold bg-white/60" /></div>
@@ -1080,7 +1158,7 @@ const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, curre
               <p className="text-sm text-slate-600 font-black">Admin password required.</p>
               <PasswordInput value={confirmPassword} onChange={setConfirmPassword} placeholder="Enter password" />
               {confirmError && <p className="text-red-500 text-xs font-black">{confirmError}</p>}
-              <div className="flex justify-end gap-3"><Button variant="secondary" onClick={() => { setShowConfirmModal(false); setConfirmPassword(''); setConfirmError(''); }}>Cancel</Button><Button variant="primary" onClick={() => { if(!currentAdmin || confirmPassword !== currentAdmin.password) { setConfirmError('Incorrect.'); return; } onUpdate(editForm); setViewStudent({...editForm}); setShowConfirmModal(false); setIsEditing(false); setConfirmPassword(''); setConfirmError(''); }} className="px-8">Confirm</Button></div>
+              <div className="flex justify-end gap-3"><Button variant="secondary" onClick={() => { setShowConfirmModal(false); setConfirmPassword(''); setConfirmError(''); }}>Cancel</Button><Button variant="primary" onClick={async () => { if(!currentAdmin || confirmPassword !== currentAdmin.password) { setConfirmError('Incorrect.'); return; } await onUpdate(editForm); setViewStudent({...editForm}); setShowConfirmModal(false); setIsEditing(false); setConfirmPassword(''); setConfirmError(''); }} className="px-8">Confirm</Button></div>
             </div>
           </Card>
         </div>
@@ -1143,7 +1221,7 @@ const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data
       <ConfirmationModal isOpen={!!deleteSessionID} title="Delete Session" message="Delete this test session? Historic bookings will be preserved in candidate records." confirmText="Delete Session" onCancel={() => setDeleteSessionID(null)} onConfirm={() => { onDelete(deleteSessionID!); setDeleteSessionID(null); }} />
       {!isReadOnly && showAdd && (
         <Card title={editingTest ? "Edit Session" : "New Test Slot"}>
-          <form onSubmit={(e) => { e.preventDefault(); if (editingTest) onUpdate({...editingTest, ...form}); else onAdd(form); setShowAdd(false); setEditingTest(null); }} className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <form onSubmit={async (e) => { e.preventDefault(); if (editingTest) await onUpdate({...editingTest, ...form}); else await onAdd(form); setShowAdd(false); setEditingTest(null); }} className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Module</label><select value={form.test_type} onChange={e => setForm({...form, test_type: e.target.value as TestType})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60">{Object.values(TestType).map(v => <option key={v} value={v}>{v}</option>)}</select></div>
             <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Date</label><input type="date" required value={form.test_date} onChange={e => setForm({...form, test_date: e.target.value, test_day: getWeekday(e.target.value)})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
             <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Day (Auto)</label><input readOnly value={form.test_day} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-400 bg-slate-50/50" /></div>
@@ -1182,7 +1260,7 @@ const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data
   );
 };
 
-const PaidTestManager = ({ data, onRegister, isReadOnly }: { data: AppState, onRegister: (t: any, guestInfo: { name: string, phone: string }, speakingSlot?: any) => Registration | void, isReadOnly: boolean }) => {
+const PaidTestManager = ({ data, onRegister, isReadOnly }: { data: AppState, onRegister: (t: any, guestInfo: { name: string, phone: string }, speakingSlot?: any) => Promise<Registration | void>, isReadOnly: boolean }) => {
   const [search, setSearch] = useState('');
   const [selectedTest, setSelectedTest] = useState<TestSchedule | null>(null);
   const [guestForm, setGuestForm] = useState({ name: '', phone: '' });
@@ -1228,7 +1306,7 @@ const PaidTestManager = ({ data, onRegister, isReadOnly }: { data: AppState, onR
                     {assignedRoom && <p className="text-[10px] font-black text-emerald-300 text-center">{assignedRoom}</p>}
                   </div>
                 )}
-                <div className="flex gap-4 pt-6"><Button variant="secondary" onClick={() => setSelectedTest(null)} className="flex-1 !bg-white/10 !text-white">Cancel</Button><Button variant="primary" onClick={() => { if(!guestForm.name || !guestForm.phone) return alert("Fill all fields."); const reg = onRegister(selectedTest, guestForm, (selectedTest.test_type === TestType.MOCK || selectedTest.test_type === TestType.SPEAKING) ? { date: speakingDate, room: assignedRoom, time: speakingTime } : undefined); if(reg) setConfirmedBooking(reg); setSelectedTest(null); setGuestForm({name:'', phone:''}); setSpeakingDate(''); setSpeakingTime(''); setAssignedRoom(''); }} className="flex-[1.5] !bg-white !text-[#6c3baa]">Confirm</Button></div>
+                <div className="flex gap-4 pt-6"><Button variant="secondary" onClick={() => setSelectedTest(null)} className="flex-1 !bg-white/10 !text-white">Cancel</Button><Button variant="primary" onClick={async () => { if(!guestForm.name || !guestForm.phone) return alert("Fill all fields."); const reg = await onRegister(selectedTest, guestForm, (selectedTest.test_type === TestType.MOCK || selectedTest.test_type === TestType.SPEAKING) ? { date: speakingDate, room: assignedRoom, time: speakingTime } : undefined); if(reg) setConfirmedBooking(reg); setSelectedTest(null); setGuestForm({name:'', phone:''}); setSpeakingDate(''); setSpeakingTime(''); setAssignedRoom(''); }} className="flex-[1.5] !bg-white !text-[#6c3baa]">Confirm</Button></div>
               </div>
             </Card>
           </div>
@@ -1270,7 +1348,7 @@ const AvailableTests = ({ student, data, onRegister }: any) => {
                   {assignedRoom && (<div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center justify-between"><p className="text-[10px] font-black text-emerald-700 uppercase">Assigned Room:</p><p className="font-black text-emerald-800 text-sm">{assignedRoom}</p></div>)}
                 </div>
               )}
-              <div className="space-y-6"><label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Portal Password</label><PasswordInput value={passInput} onChange={setPassInput} placeholder="Confirm Identity" />{error && <p className="text-red-500 text-xs font-black bg-red-50 p-3 rounded-xl">{error}</p>}<div className="flex gap-4 pt-4"><Button variant="secondary" onClick={() => { setConfirmTest(null); setPassInput(''); setSpeakingDate(''); setSpeakingTime(''); setAssignedRoom(''); setError(''); }} className="flex-1">Cancel</Button><Button variant="primary" onClick={() => { if (passInput === student.password) { if (confirmTest?.current_registrations >= confirmTest?.max_capacity) return setError('Full.'); if ((confirmTest?.test_type === TestType.MOCK || confirmTest?.test_type === TestType.SPEAKING) && (!speakingDate || !speakingTime)) return setError('Select speaking.'); onRegister(confirmTest, { date: speakingDate, room: assignedRoom, time: speakingTime }); setConfirmTest(null); setPassInput(''); setSpeakingDate(''); setSpeakingTime(''); setAssignedRoom(''); setError(''); } else setError('Incorrect.'); }} className="flex-[1.5]">Confirm</Button></div></div>
+              <div className="space-y-6"><label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Portal Password</label><PasswordInput value={passInput} onChange={setPassInput} placeholder="Confirm Identity" />{error && <p className="text-red-500 text-xs font-black bg-red-50 p-3 rounded-xl">{error}</p>}<div className="flex gap-4 pt-4"><Button variant="secondary" onClick={() => { setConfirmTest(null); setPassInput(''); setSpeakingDate(''); setSpeakingTime(''); setAssignedRoom(''); setError(''); }} className="flex-1">Cancel</Button><Button variant="primary" onClick={async () => { if (passInput === student.password) { if (confirmTest?.current_registrations >= confirmTest?.max_capacity) return setError('Full.'); if ((confirmTest?.test_type === TestType.MOCK || confirmTest?.test_type === TestType.SPEAKING) && (!speakingDate || !speakingTime)) return setError('Select speaking.'); await onRegister(confirmTest, { date: speakingDate, room: assignedRoom, time: speakingTime }); setConfirmTest(null); setPassInput(''); setSpeakingDate(''); setSpeakingTime(''); setAssignedRoom(''); setError(''); } else setError('Incorrect.'); }} className="flex-[1.5]">Confirm</Button></div></div>
             </Card>
           </div>
         </div>
@@ -1342,7 +1420,7 @@ const AdminResults = ({ data, onAddResult, onUpdateResult, onDeleteResult, isRea
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6"><h2 className="text-4xl font-black text-slate-900 leading-tight">Scoring</h2><div className="flex flex-col sm:flex-row items-center justify-end w-full md:w-auto gap-4"><SearchInput value={search} onChange={setSearch} placeholder="Filter outcomes..." />{!isReadOnly && <Button onClick={() => { setEditingResultId(null); setShowAdd(true); setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 }); }} variant="primary">+ Result</Button>}</div></div>
       {!isReadOnly && showAdd && (
         <Card title={editingResultId ? "Modify Record" : "Post Outcome"}>
-          <form onSubmit={(e) => { e.preventDefault(); const payload = { user_id: form.user_id, test_id: form.test_id, listening_score: form.l, reading_score: form.r, writing_score: form.w, speaking_score: form.s, overall_score: form.overall }; if (editingResultId) onUpdateResult({ ...payload, result_id: editingResultId }); else onAddResult(payload); setShowAdd(false); setEditingResultId(null); setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 }); }} className="space-y-10">
+          <form onSubmit={async (e) => { e.preventDefault(); const payload = { user_id: form.user_id, test_id: form.test_id, listening_score: form.l, reading_score: form.r, writing_score: form.w, speaking_score: form.s, overall_score: form.overall }; if (editingResultId) await onUpdateResult({ ...payload, result_id: editingResultId }); else await onAddResult(payload); setShowAdd(false); setEditingResultId(null); setForm({ user_id: '', test_id: '', l: 0, r: 0, w: 0, s: 0, overall: 0 }); }} className="space-y-10">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <SearchableSelect label="Examination" placeholder="Audit Link..." options={sessionOptions} value={form.test_id} onChange={(id: string) => setForm({...form, test_id: id, user_id: ''})} formatOption={(opt: any) => (<div className="flex flex-col"><span className="font-black text-[#6c3baa]">{opt.type}</span><span className="text-[10px] text-slate-500 font-bold uppercase">{opt.day}, {formatDate(opt.date)}</span></div>)} />
               <SearchableSelect label="Candidate" placeholder="Find handle..." options={studentOptions} value={form.user_id} onChange={(id: string) => setForm({...form, user_id: id})} formatOption={(opt: any) => (<div className="flex items-center gap-3"><UserAvatar role={UserRole.STUDENT} id={opt.id} name={opt.name} className="w-10 h-10 rounded-lg" /><div><span className="font-black text-slate-900 block">{opt.name}</span><span className="text-[10px] text-slate-500 font-bold uppercase">ID: {opt.id}</span></div></div>)} />
@@ -1376,7 +1454,7 @@ const StaffManager = ({ admins, onAdd, onDelete, isReadOnly }: { admins: Admin[]
     <div className="space-y-10 animate-in fade-in duration-500">
       <div className="flex justify-between items-center"><h2 className="text-4xl font-black text-slate-900">Access</h2>{!isReadOnly && <Button onClick={() => useStateAdd(true)} variant="primary">+ Handle</Button>}</div>
       <ConfirmationModal isOpen={!!deleteAdminID} title="Revoke Access" message="Remove administrator? All privileges will be revoked." confirmText="Revoke" onCancel={() => setDeleteAdminID(null)} onConfirm={() => { onDelete(deleteAdminID!); setDeleteAdminID(null); }} />
-      {!isReadOnly && showAdd && (<Card title="Grant Access"><form onSubmit={(e) => { e.preventDefault(); onAdd(form); useStateAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase ml-1">Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div><div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => useStateAdd(false)}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div></form></Card>)}
+      {!isReadOnly && showAdd && (<Card title="Grant Access"><form onSubmit={async (e) => { e.preventDefault(); await onAdd(form); useStateAdd(false); setForm({ username: '', password: '', role: UserRole.MODERATOR }); }} className="grid grid-cols-1 md:grid-cols-3 gap-6"><div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase ml-1">Member Handle</label><input required value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase ml-1">Master Key</label><PasswordInput value={form.password} onChange={v => setForm({...form, password: v})} required /></div><div className="space-y-1.5"><label className="text-xs font-black text-slate-500 uppercase ml-1">Level</label><select value={form.role} onChange={e => setForm({...form, role: e.target.value as UserRole})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60"><option value={UserRole.CO_ADMIN}>Co-Admin</option><option value={UserRole.MODERATOR}>Moderator</option><option value={UserRole.VIEWER}>Viewer</option></select></div><div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => useStateAdd(false)}>Discard</Button><Button variant="primary" type="submit">Deploy Handle</Button></div></form></Card>)}
       <div className="bg-white/20 backdrop-blur-3xl border border-white/40 rounded-3xl overflow-hidden shadow-2xl">
         <div className="overflow-x-auto"><table className="w-full text-left text-sm border-collapse"><thead className="bg-[#6c3baa]/90 text-white"><tr><th className="p-6 font-black uppercase text-[10px] tracking-widest">Handle</th><th className="p-6 font-black uppercase text-[10px] tracking-widest">Layer</th><th className="p-6 font-black uppercase text-[10px] tracking-widest text-right">Action</th></tr></thead><tbody className="divide-y divide-white/20">{admins.map(a => (<tr key={a.admin_id} className="hover:bg-white/40 transition-colors"><td className="p-6"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-xl bg-white/40 overflow-hidden"><UserAvatar role={a.role} id={a.admin_id} name={a.username} className="w-full h-full" /></div><span className="font-black text-slate-900">{a.username}</span></div></td><td className="p-6"><Badge color="brand">{a.role.replace('_', ' ')}</Badge></td><td className="p-6 text-right">{!isReadOnly && a.username !== 'HA.admin01' && (<button onClick={() => setDeleteAdminID(a.admin_id)} className="text-red-400 font-black text-xs hover:text-red-600 uppercase">Revoke</button>)}</td></tr>))}</tbody></table></div>
       </div>
