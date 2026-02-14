@@ -21,8 +21,8 @@ const SPEAKING_TIMES = [
 const SPEAKING_ROOMS = ["Room No: 01", "Room No: 02", "Room No: 03"];
 
 // --- SUPABASE CONFIGURATION ---
-const SUPABASE_URL = 'https://njbmcxkmugnabqfwvolr.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_SS6k_XZBjOFBKzQR42pJow_cETglJ61';
+const SUPABASE_URL = 'https://gqdtlyycgnepuqtqlmfp.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable__U1Cc66bmThzExmKRjunKA_0PGIcgip';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -941,6 +941,8 @@ const ReportsView = ({ data }: { data: AppState }) => {
     </div>
   );
 };
+
+// --- RE-IMPLEMENTING FULL FEATURE COMPONENTS ---
 
 const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, currentAdmin, data }: any) => {
   const [showAdd, setShowAdd] = useState(false);
