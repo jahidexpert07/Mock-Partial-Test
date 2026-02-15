@@ -48,7 +48,7 @@ export interface Student {
   remaining_tests: RemainingTests;
   created_by: string;
   created_at: string;
-  expiry_date: string; // Account validation date
+  expiry_date: string;
 }
 
 export interface Admin {
@@ -70,8 +70,11 @@ export interface TestSchedule {
   max_capacity: number;
   current_registrations: number;
   created_by: string;
-  is_closed: boolean; // Manual control for session status
-  is_deleted?: boolean; // Soft delete flag for history persistence
+  is_closed: boolean;
+  is_deleted?: boolean;
+  speaking_slots?: {
+    [room: string]: string[];
+  };
 }
 
 export interface Registration {
@@ -84,8 +87,8 @@ export interface Registration {
   speaking_date?: string;
   speaking_time?: string;
   speaking_room?: string;
-  guest_name?: string; // For paid students without accounts
-  guest_phone?: string; // For paid students without accounts
+  guest_name?: string;
+  guest_phone?: string;
 }
 
 export interface Result {

@@ -10,7 +10,7 @@ import { INITIAL_ADMINS, MOCK_TESTS } from './constants';
 const STORAGE_KEY = 'ielts_system_v18_final';
 const BRAND_BLUE = '#38b6ff';
 
-const SPEAKING_TIMES = [
+const SPEAKING_TIMES_DEFAULT = [
   "10:40 AM", "11:00 AM", "11:20 AM", "11:40 AM",
   "12:00 PM", "12:20 PM", "12:40 PM",
   "02:10 PM", "02:30 PM", "02:50 PM", "03:10 PM", "03:30 PM", "03:50 PM",
@@ -124,7 +124,6 @@ const SupabaseAPI = {
     }
   },
 
-  // Atomic Upsert Helper
   async upsert(table: string, data: any, pk: string) {
     const { error } = await supabase.from(table).upsert(data, { onConflict: pk });
     if (error) {
@@ -452,7 +451,6 @@ const App = () => {
         setAppData(cloudData);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudData));
         
-        // AUTO-CLEANUP EXPIRED STUDENTS (For Admin/Co-Admin)
         if (userRole === UserRole.ADMIN || userRole === UserRole.CO_ADMIN) {
           const today = new Date().toISOString().split('T')[0];
           const expired = cloudData.students.filter(s => s.expiry_date && s.expiry_date < today);
@@ -460,7 +458,6 @@ const App = () => {
             for (const s of expired) {
               await SupabaseAPI.deleteStudent(s.user_id);
             }
-            // Reload to reflect changes
             const updated = await SupabaseAPI.getData();
             if (updated) setAppData(updated);
           }
@@ -596,10 +593,7 @@ const App = () => {
                 onAdd={async (s:any) => {
                   const existing = appData.students.find(x => x.user_id === s.user_id);
                   if (existing) { alert('User ID already exists.'); return null; }
-                  
-                  // Clean up the object to match database columns
                   const { listening, reading, writing, speaking, mock, ...coreData } = s;
-                  
                   const newStudent: Student = { 
                     ...coreData, 
                     avatar_url: generateAvatar(UserRole.STUDENT, s.user_id),
@@ -608,7 +602,6 @@ const App = () => {
                     created_by: currentAdmin?.username || 'Admin', 
                     created_at: new Date().toISOString() 
                   };
-
                   setIsSyncing(true);
                   try {
                     await SupabaseAPI.upsert('students', newStudent, 'user_id');
@@ -621,7 +614,6 @@ const App = () => {
                 onUpdate={async (s: Student) => {
                   setIsSyncing(true);
                   try {
-                    // Type safety check: Student interface doesn't have individual test columns
                     await SupabaseAPI.upsert('students', s, 'user_id');
                     setAppData(p => ({ ...p, students: p.students.map(x => x.user_id === s.user_id ? s : x) }));
                   } finally {
@@ -1020,8 +1012,6 @@ const ReportsView = ({ data }: { data: AppState }) => {
   );
 };
 
-// --- RE-IMPLEMENTING FULL FEATURE COMPONENTS ---
-
 const StudentManager = ({ students, onAdd, onUpdate, onDelete, isReadOnly, currentAdmin, data }: any) => {
   const [showAdd, setShowAdd] = useState(false);
   const [viewStudent, setViewStudent] = useState<Student | null>(null);
@@ -1192,10 +1182,45 @@ const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data
   const [editingTest, setEditingTest] = useState<TestSchedule | null>(null);
   const [search, setSearch] = useState('');
   const [viewSlotID, setViewSlotID] = useState<string | null>(null);
-  const [form, setForm] = useState({ test_type: TestType.LISTENING, test_day: 'Monday', test_date: '', test_time: '', room_number: '', max_capacity: 10, is_closed: false });
+  const [form, setForm] = useState<Partial<TestSchedule>>({ 
+    test_type: TestType.LISTENING, 
+    test_day: 'Monday', 
+    test_date: '', 
+    test_time: '', 
+    room_number: '', 
+    max_capacity: 10, 
+    is_closed: false,
+    speaking_slots: {
+      "Room No: 01": [""],
+      "Room No: 02": [""],
+      "Room No: 03": [""]
+    }
+  });
   const [deleteSessionID, setDeleteSessionID] = useState<string | null>(null);
   const filtered = data.tests.filter(t => !t.is_deleted && (t.test_type.toLowerCase().includes(search.toLowerCase()) || t.room_number.toLowerCase().includes(search.toLowerCase()) || t.test_day.toLowerCase().includes(search.toLowerCase())));
   const studentList = useMemo(() => { if (!viewSlotID) return []; return data.registrations.filter(r => r.test_id === viewSlotID).map(reg => { const s = data.students.find(x => x.user_id === reg.user_id); if (s) return { ...s, speaking_date: reg.speaking_date, speaking_time: reg.speaking_time, speaking_room: reg.speaking_room }; return { user_id: reg.user_id, name: reg.guest_name || 'Guest', phone: reg.guest_phone || '--', batch_number: 'PAID-GUEST', speaking_date: reg.speaking_date, speaking_time: reg.speaking_time, speaking_room: reg.speaking_room }; }).filter(s => !!s.user_id); }, [data.registrations, data.students, viewSlotID]);
+
+  const handleAddSlot = (room: string) => {
+    setForm(prev => ({
+      ...prev,
+      speaking_slots: {
+        ...(prev.speaking_slots || { "Room No: 01": [], "Room No: 02": [], "Room No: 03": [] }),
+        [room]: [...(prev.speaking_slots?.[room] || []), ""]
+      }
+    }));
+  };
+
+  const handleSlotChange = (room: string, index: number, value: string) => {
+    const newSlots = [...(form.speaking_slots?.[room] || [])];
+    newSlots[index] = value;
+    setForm(prev => ({
+      ...prev,
+      speaking_slots: {
+        ...prev.speaking_slots,
+        [room]: newSlots
+      }
+    }));
+  };
 
   const downloadExcel = () => {
     const currentViewedTest = data.tests.find(t => t.test_id === viewSlotID);
@@ -1216,19 +1241,59 @@ const ScheduleManager = ({ data, onAdd, onUpdate, onDelete, isReadOnly }: { data
     <div className="space-y-10 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <h2 className="text-4xl font-black text-slate-900 leading-tight">Sessions</h2>
-        <div className="flex flex-col sm:flex-row items-center justify-end w-full md:w-auto gap-4"><SearchInput value={search} onChange={setSearch} placeholder="Search slots..." />{!isReadOnly && <Button onClick={() => { setEditingTest(null); setShowAdd(true); }} variant="primary" className="px-8 whitespace-nowrap">+ New Slot</Button>}</div>
+        <div className="flex flex-col sm:flex-row items-center justify-end w-full md:w-auto gap-4"><SearchInput value={search} onChange={setSearch} placeholder="Search slots..." />{!isReadOnly && <Button onClick={() => { 
+          setEditingTest(null); 
+          setForm({ 
+            test_type: TestType.LISTENING, test_day: 'Monday', test_date: '', test_time: '', room_number: '', max_capacity: 10, is_closed: false,
+            speaking_slots: { "Room No: 01": [""], "Room No: 02": [""], "Room No: 03": [""] }
+          });
+          setShowAdd(true); 
+        }} variant="primary" className="px-8 whitespace-nowrap">+ New Slot</Button>}</div>
       </div>
       <ConfirmationModal isOpen={!!deleteSessionID} title="Delete Session" message="Delete this test session? Historic bookings will be preserved in candidate records." confirmText="Delete Session" onCancel={() => setDeleteSessionID(null)} onConfirm={() => { onDelete(deleteSessionID!); setDeleteSessionID(null); }} />
       {!isReadOnly && showAdd && (
         <Card title={editingTest ? "Edit Session" : "New Test Slot"}>
-          <form onSubmit={async (e) => { e.preventDefault(); if (editingTest) await onUpdate({...editingTest, ...form}); else await onAdd(form); setShowAdd(false); setEditingTest(null); }} className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Module</label><select value={form.test_type} onChange={e => setForm({...form, test_type: e.target.value as TestType})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60">{Object.values(TestType).map(v => <option key={v} value={v}>{v}</option>)}</select></div>
-            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Date</label><input type="date" required value={form.test_date} onChange={e => setForm({...form, test_date: e.target.value, test_day: getWeekday(e.target.value)})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
-            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Day (Auto)</label><input readOnly value={form.test_day} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-400 bg-slate-50/50" /></div>
-            <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Time</label><input placeholder="Ex: 09:30 AM" required value={form.test_time} onChange={e => setForm({...form, test_time: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
-            <div className="space-y-1.5 md:col-span-2"><label className="text-[10px] font-black text-slate-500 uppercase">Room</label><input placeholder="Ex: Room 4" required value={form.room_number} onChange={e => setForm({...form, room_number: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
-            <div className="space-y-1.5 md:col-span-1"><label className="text-[10px] font-black text-slate-500 uppercase">Max</label><input type="number" min="1" required value={form.max_capacity} onChange={e => setForm({...form, max_capacity: parseInt(e.target.value) || 0})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
-            <div className="md:col-span-1 flex items-center pt-4"><label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={form.is_closed} onChange={e => setForm({...form, is_closed: e.target.checked})} className="w-6 h-6 rounded-lg text-[#6c3baa]" /><span className="font-black text-slate-700 uppercase text-xs">Manual Close</span></label></div>
+          <form onSubmit={async (e) => { e.preventDefault(); if (editingTest) await onUpdate({...editingTest, ...form} as TestSchedule); else await onAdd(form); setShowAdd(false); setEditingTest(null); }} className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Module</label><select value={form.test_type} onChange={e => setForm({...form, test_type: e.target.value as TestType})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60">{Object.values(TestType).map(v => <option key={v} value={v}>{v}</option>)}</select></div>
+              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Date</label><input type="date" required value={form.test_date} onChange={e => setForm({...form, test_date: e.target.value, test_day: getWeekday(e.target.value)})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
+              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Day (Auto)</label><input readOnly value={form.test_day} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-400 bg-slate-50/50" /></div>
+              <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase">Time</label><input placeholder="Ex: 09:30 AM" required value={form.test_time} onChange={e => setForm({...form, test_time: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
+              <div className="space-y-1.5 md:col-span-2"><label className="text-[10px] font-black text-slate-500 uppercase">Room</label><input placeholder="Ex: Room 4" required value={form.room_number} onChange={e => setForm({...form, room_number: e.target.value})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
+              <div className="space-y-1.5 md:col-span-1"><label className="text-[10px] font-black text-slate-500 uppercase">Max</label><input type="number" min="1" required value={form.max_capacity} onChange={e => setForm({...form, max_capacity: parseInt(e.target.value) || 0})} className="w-full border border-slate-200/50 p-4 rounded-2xl font-black text-slate-900 bg-white/60" /></div>
+              <div className="md:col-span-1 flex items-center pt-4"><label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={form.is_closed} onChange={e => setForm({...form, is_closed: e.target.checked})} className="w-6 h-6 rounded-lg text-[#6c3baa]" /><span className="font-black text-slate-700 uppercase text-xs">Manual Close</span></label></div>
+            </div>
+
+            {(form.test_type === TestType.MOCK || form.test_type === TestType.SPEAKING) && (
+              <div className="mt-8 pt-8 border-t border-slate-100">
+                <h4 className="text-sm font-black text-[#6c3baa] uppercase tracking-widest mb-6">Configure Speaking Slots</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {SPEAKING_ROOMS.map(room => (
+                    <div key={room} className="p-5 bg-white/40 border border-slate-100/50 rounded-3xl space-y-3">
+                      <p className="text-[10px] font-black text-slate-500 uppercase text-center mb-2">{room}</p>
+                      {(form.speaking_slots?.[room] || []).map((time, idx) => (
+                        <div key={idx} className="flex gap-2">
+                          <input 
+                            placeholder="Ex: 10:30 AM"
+                            value={time}
+                            onChange={(e) => handleSlotChange(room, idx, e.target.value)}
+                            className="flex-1 text-xs font-bold p-3 bg-white/60 border border-slate-100 rounded-xl focus:ring-2 focus:ring-[#6c3baa] outline-none"
+                          />
+                        </div>
+                      ))}
+                      <button 
+                        type="button" 
+                        onClick={() => handleAddSlot(room)}
+                        className="w-full p-3 border-2 border-dashed border-slate-200 rounded-xl text-[#6c3baa] hover:bg-white hover:border-[#6c3baa] transition-all flex items-center justify-center font-black text-xs"
+                      >
+                        + Add Slot
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="col-span-full flex justify-end gap-3 pt-6"><Button variant="secondary" onClick={() => { setShowAdd(false); setEditingTest(null); }}>Cancel</Button><Button variant="primary" type="submit">Deploy Session</Button></div>
           </form>
         </Card>
@@ -1272,6 +1337,19 @@ const PaidTestManager = ({ data, onRegister, isReadOnly }: { data: AppState, onR
   const testSpeakingDates = useMemo(() => { if (!selectedTest) return []; const baseDate = new Date(selectedTest.test_date); if (selectedTest.test_type === TestType.MOCK) { const prev = new Date(baseDate); prev.setDate(baseDate.getDate() - 1); const next = new Date(baseDate); next.setDate(baseDate.getDate() + 1); return [prev.toISOString().split('T')[0], next.toISOString().split('T')[0]]; } return [selectedTest.test_date]; }, [selectedTest]);
   const occupiedSlots = useMemo(() => selectedTest ? data.registrations.filter(r => r.test_id === selectedTest.test_id && r.speaking_date && r.speaking_time && r.speaking_room).map(r => `${r.speaking_date}|${r.speaking_room}|${r.speaking_time}`) : [], [data.registrations, selectedTest]);
 
+  const availableSpeakingTimes = useMemo(() => {
+    if (!selectedTest) return [];
+    if (selectedTest.speaking_slots) {
+      const allTimes = new Set<string>();
+      Object.values(selectedTest.speaking_slots).forEach((slots: any) => {
+        slots.forEach((s: string) => { if (s) allTimes.add(s); });
+      });
+      const times = Array.from(allTimes).sort();
+      return times.length > 0 ? times : SPEAKING_TIMES_DEFAULT;
+    }
+    return SPEAKING_TIMES_DEFAULT;
+  }, [selectedTest]);
+
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6"><h2 className="text-4xl font-black text-slate-900">Paid Test</h2><SearchInput value={search} onChange={setSearch} placeholder="Filter schedules..." /></div>
@@ -1297,8 +1375,11 @@ const PaidTestManager = ({ data, onRegister, isReadOnly }: { data: AppState, onR
                     <select value={speakingDate} onChange={e => { setSpeakingDate(e.target.value); setSpeakingTime(''); setAssignedRoom(''); }} className="w-full border border-white/20 p-4 rounded-2xl font-black bg-white/10 text-white outline-none"><option value="" className="text-slate-900">Select Date</option>{testSpeakingDates.map(d => <option key={d} value={d} className="text-slate-900">{formatDate(d)}</option>)}</select>
                     {speakingDate && (
                       <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">
-                        {SPEAKING_TIMES.map(t => {
-                          const room = SPEAKING_ROOMS.find(r => !occupiedSlots.includes(`${speakingDate}|${r}|${t}`));
+                        {availableSpeakingTimes.map(t => {
+                          const room = SPEAKING_ROOMS.find(r => {
+                            const isTimeInRoom = selectedTest.speaking_slots?.[r]?.includes(t) ?? true;
+                            return isTimeInRoom && !occupiedSlots.includes(`${speakingDate}|${r}|${t}`);
+                          });
                           return (<button key={t} disabled={!room} onClick={() => { setSpeakingTime(t); setAssignedRoom(room!); }} className={`p-3 rounded-xl text-[10px] font-black border transition-all ${!room ? 'bg-white/5 text-white/20' : speakingTime === t ? 'bg-white text-[#6c3baa]' : 'bg-white/10 text-white hover:bg-white/20'}`}>{t}</button>);
                         })}
                       </div>
@@ -1331,6 +1412,19 @@ const AvailableTests = ({ student, data, onRegister }: any) => {
   useEffect(() => { if (testSpeakingDates.length === 1 && !speakingDate) setSpeakingDate(testSpeakingDates[0]); }, [testSpeakingDates, speakingDate]);
   const occupiedSlots = useMemo(() => confirmTest ? data.registrations.filter(r => r.test_id === confirmTest.test_id && r.speaking_date && r.speaking_time && r.speaking_room).map(r => `${r.speaking_date}|${r.speaking_room}|${r.speaking_time}`) : [], [data.registrations, confirmTest]);
 
+  const availableSpeakingTimes = useMemo(() => {
+    if (!confirmTest) return [];
+    if (confirmTest.speaking_slots) {
+      const allTimes = new Set<string>();
+      Object.values(confirmTest.speaking_slots).forEach((slots: any) => {
+        slots.forEach((s: string) => { if (s) allTimes.add(s); });
+      });
+      const times = Array.from(allTimes).sort();
+      return times.length > 0 ? times : SPEAKING_TIMES_DEFAULT;
+    }
+    return SPEAKING_TIMES_DEFAULT;
+  }, [confirmTest]);
+
   return (
     <div className="space-y-10 animate-in fade-in duration-500">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6"><h2 className="text-4xl font-black text-slate-900 tracking-tight">Booking</h2><SearchInput value={search} onChange={setSearch} placeholder="Find sessions..." /></div>
@@ -1344,7 +1438,13 @@ const AvailableTests = ({ student, data, onRegister }: any) => {
                 <div className="mb-8 space-y-6">
                   <p className="text-[10px] font-black text-[#38b6ff] uppercase tracking-[0.2em] border-b border-[#38b6ff]/20 pb-2">Assign Speaking Slot</p>
                   {confirmTest.test_type === TestType.MOCK && (<div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase ml-1">Speaking Date</label><div className="flex gap-2">{testSpeakingDates.map(d => (<button key={d} onClick={() => { setSpeakingDate(d); setSpeakingTime(''); setAssignedRoom(''); }} className={`flex-1 p-3 rounded-xl text-[10px] font-black border transition-all ${speakingDate === d ? 'bg-[#38b6ff] text-white border-[#38b6ff]' : 'bg-white text-slate-700 border-slate-200'}`}>{formatDate(d)}</button>))}</div></div>)}
-                  {speakingDate && (<div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase ml-1">Choose Time</label><div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">{SPEAKING_TIMES.map(t => { const room = SPEAKING_ROOMS.find(r => !occupiedSlots.includes(`${speakingDate}|${r}|${t}`)); return (<button key={t} type="button" disabled={!room} onClick={() => { setSpeakingTime(t); setAssignedRoom(room!); }} className={`p-3 rounded-xl text-[10px] font-black transition-all border ${!room ? 'bg-slate-50 text-slate-300' : speakingTime === t ? 'bg-[#6c3baa] text-white' : 'bg-white text-slate-700'}`}>{t}</button>); })}</div></div>)}
+                  {speakingDate && (<div className="space-y-1.5"><label className="text-[10px] font-black text-slate-500 uppercase ml-1">Choose Time</label><div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">{availableSpeakingTimes.map(t => { 
+                    const room = SPEAKING_ROOMS.find(r => {
+                      const isTimeInRoom = confirmTest.speaking_slots?.[r]?.includes(t) ?? true;
+                      return isTimeInRoom && !occupiedSlots.includes(`${speakingDate}|${r}|${t}`);
+                    });
+                    return (<button key={t} type="button" disabled={!room} onClick={() => { setSpeakingTime(t); setAssignedRoom(room!); }} className={`p-3 rounded-xl text-[10px] font-black transition-all border ${!room ? 'bg-slate-50 text-slate-300' : speakingTime === t ? 'bg-[#6c3baa] text-white' : 'bg-white text-slate-700'}`}>{t}</button>); 
+                  })}</div></div>)}
                   {assignedRoom && (<div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 flex items-center justify-between"><p className="text-[10px] font-black text-emerald-700 uppercase">Assigned Room:</p><p className="font-black text-emerald-800 text-sm">{assignedRoom}</p></div>)}
                 </div>
               )}
